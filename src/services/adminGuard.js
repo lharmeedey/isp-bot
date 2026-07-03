@@ -1,11 +1,15 @@
-// List of Telegram user IDs that have admin access.
-// Add your own Telegram ID here.
-const ADMIN_IDS = (process.env.ADMIN_IDS || '999999999')
+const ADMIN_IDS = (process.env.ADMIN_IDS || '')
   .split(',')
-  .map(id => Number(id.trim()));
+  .map(id => Number(id.trim()))
+  .filter(Boolean);
+
+console.log('Admin IDs loaded:', ADMIN_IDS);
 
 function isAdmin(ctx) {
-  return ADMIN_IDS.includes(ctx.from?.id);
+  const userId = ctx.from?.id;
+  const result = ADMIN_IDS.includes(userId);
+  console.log(`[admin check] user=${userId} isAdmin=${result}`);
+  return result;
 }
 
 function adminOnly(handler) {
