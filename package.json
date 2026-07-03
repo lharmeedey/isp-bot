@@ -1,21 +1,18 @@
 {
   "name": "isp-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "ISP Telegram Bot",
+  "main": "src/bot.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/bot.js",
+    "migrate": "node src/services/migrate.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "axios": "^1.18.1",
-    "crypto": "^1.0.1",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "node-cron": "^4.5.0",
-    "pg": "^8.22.0",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "pg": "^8.11.3",
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.1"
   }
 }
