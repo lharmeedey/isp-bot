@@ -113,21 +113,31 @@ async function handleSuperAdminText(ctx, next) {
       const tenantId   = `tenant_${Date.now()}`;
       const webhookUrl = process.env.WEBHOOK_URL || null;
 
-      // Save to database
-      await db.query(
-        `INSERT INTO tenants
-         (tenant_id, name, email, bot_token, paystack_secret, paystack_public, webhook_url)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [
-          tenantId,
-          state.name,
-          state.email,
-          state.bot_token,
-          state.paystack_secret,
-          state.paystack_public,
-          webhookUrl,
-        ]
-      );
+// Check if bot token already exists
+const existing = await db.query(
+  'SELECT tenant_id FROM tenants WHERE bot_token=$1',
+  [state.bot_token]
+);
+if (existing.rows.length) {
+  return ctx.reply(
+    `❌ That bot token is already registered under tenant \`${existing.rows[0].tenant_id}\`.\n\nAsk the client to create a new bot via @BotFather, or use /addtenant with a different token.`
+  );
+}
+
+await db.query(
+  `INSERT INTO tenants
+   (tenant_id, name, email, bot_token, paystack_secret, paystack_public, webhook_url)
+   VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+  [
+    tenantId,
+    state.name,
+    state.email,
+    state.bot_token,
+    state.paystack_secret,
+    state.paystack_public,
+    webhookUrl,
+  ]
+);
 
       // Fetch full tenant record
       const tenantRes = await db.query(
