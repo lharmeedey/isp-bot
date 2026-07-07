@@ -1,70 +1,121 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const cron    = require('node-cron');
 const express = require('express');
+const cron    = require('node-cron');
 
-const { adminOnly } = require('./services/adminGuard');
-const { handleText, startRegistration } = require('./commands/register');
+const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
+  .split(',').map(Number).filter(Boolean);
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const tenantManager = require('./services/tenantManager');
+const superAdmin    = require('./commands/superAdmin');
+const db            = require('./services/db');
+const { gb }        = require('./services/helpers');
+
+// ── Master bot (your super admin bot) ─────────
+const masterBot = new Telegraf(process.env.BOT_TOKEN);
+
+// Super admin guard
+function superAdminOnly(handler) {
+  return async (ctx) => {
+    if (!SUPER_ADMIN_IDS.includes(ctx.from?.id)) {
+      return ctx.reply('⛔ Unauthorized.');
+    }
+    return handler(ctx);
+  };
+}
+
+// ── Super admin commands ───────────────────────
+masterBot.command('start', superAdminOnly(async (ctx) => {
+  const res    = await db.query('SELECT COUNT(*) FROM tenants WHERE active=true');
+  const res2   = await db.query('SELECT COUNT(*) FROM users');
+  const tenants = res.rows[0].count;
+  const users   = res2.rows[0].count;
+
+  return ctx.replyWithMarkdown(
+`👑 *Super Admin Dashboard*
+
+Active Tenants: *${tenants}*
+Total Users:    *${users}*
+
+Commands:
+/addtenant    — Add a new client
+/listtenants  — View all tenants
+/totalrevenue — Revenue across all tenants
+/deactivate   — Deactivate a tenant`
+  );
+}));
+
+masterBot.command('addtenant',    superAdminOnly(superAdmin.startAddTenant));
+masterBot.command('listtenants',  superAdminOnly(superAdmin.listTenants));
+masterBot.command('totalrevenue', superAdminOnly(superAdmin.totalRevenue));
+masterBot.command('deactivate',   superAdminOnly(superAdmin.deactivateTenant));
+
+masterBot.action(/^deactivate_.+$/, superAdminOnly(superAdmin.handleDeactivateCallback));
+
+masterBot.on('text', (ctx, next) =>
+  superAdmin.handleSuperAdminText(ctx, next)
+);
+
+// ── Express server ─────────────────────────────
 const app = express();
 
-// ── Customer commands ────────────────────────
-bot.command('start',    require('./commands/start'));
-bot.command('register', (ctx) => startRegistration(ctx));
-bot.command('balance',  require('./commands/balance'));
-bot.command('buy',      require('./commands/buy').showPlans);
-bot.command('history',  require('./commands/history'));
-bot.command('support',  require('./commands/support'));
+// Tenant webhook routes
+tenantManager.createWebhookRouter(app);
 
-// ── Admin commands ───────────────────────────
-const admin = require('./commands/admin');
-bot.command('sales',   adminOnly(admin.sales));
-bot.command('users',   adminOnly(admin.users));
-bot.command('online',  adminOnly(admin.online));
-bot.command('stock',   adminOnly(admin.stock));
-bot.command('revenue', adminOnly(admin.revenue));
+// Master bot webhook or polling
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const PORT        = process.env.PORT || 3000;
 
-// ── Callbacks ────────────────────────────────
-const buy = require('./commands/buy');
-bot.action(/^plan_\d+$/,    buy.handlePlanCallback);
-bot.action(/^confirm_\d+$/, buy.handleConfirmCallback);
-bot.action('cancel_buy',    buy.handleCancelCallback);
-
-// ── Free text (registration flow) ────────────
-bot.on('text', (ctx, next) => handleText(ctx, next));
-
-// ── Cron: low-data alerts every 15 min ───────
-const alertJob = require('./jobs/alertJob')(bot);
-cron.schedule('*/15 * * * *', alertJob);
-
-// ── Payment webhook ───────────────────────────
-const createWebhookServer = require('./services/webhook');
-const webhookApp = createWebhookServer(bot);
-app.use(webhookApp);
-
-const PORT = process.env.PORT || 3000;
-
-if (process.env.WEBHOOK_URL) {
-  // ── Production: webhook mode ─────────────
-  app.use(bot.webhookCallback('/bot-webhook'));
+if (WEBHOOK_URL) {
+  app.use(express.json());
+  app.post('/master', (req, res) => {
+    masterBot.handleUpdate(req.body);
+    res.sendStatus(200);
+  });
 
   app.listen(PORT, async () => {
-    await bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}/bot-webhook`);
-    console.log(`✅ Bot running in webhook mode on port ${PORT}`);
-    console.log(`💳 Paystack webhook: ${process.env.WEBHOOK_URL}/webhook/paystack`);
+    await masterBot.telegram.setWebhook(`${WEBHOOK_URL}/master`);
+    await tenantManager.launchAllTenants();
+    console.log(`✅ Master bot running in webhook mode on port ${PORT}`);
   });
 
 } else {
-  // ── Local: polling mode ───────────────────
-  app.listen(PORT, () => {
-    console.log(`💳 Webhook server listening on port ${PORT}`);
+  app.listen(PORT, async () => {
+    await tenantManager.launchAllTenants();
+    console.log(`💳 Server listening on port ${PORT}`);
   });
 
-  bot.launch()
-    .then(() => console.log('✅ Bot running in polling mode'))
-    .catch(err => { console.error('Failed to start bot:', err); process.exit(1); });
-
-  process.once('SIGINT',  () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+  masterBot.launch();
+  console.log('✅ Master bot running in polling mode');
 }
+
+// ── Cron: low-data alerts every 15 min ────────
+cron.schedule('*/15 * * * *', async () => {
+  const bots = tenantManager.getActiveTenants();
+
+  for (const [tenantId, { bot }] of bots) {
+    const users = await db.query(
+      `SELECT * FROM users
+       WHERE tenant_id=$1 AND status='active'
+       AND remaining_gb / NULLIF(total_gb,0) < 0.20`,
+      [tenantId]
+    );
+
+    for (const user of users.rows) {
+      try {
+        await bot.telegram.sendMessage(
+          user.telegram_id,
+          `⚠️ *Low Data Alert*\n\nRemaining: *${gb(user.remaining_gb)}*\nPlan: ${user.plan}\n\nRecharge with /buy`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (e) {
+        if (!e.message.includes('chat not found')) {
+          console.error(`Alert failed:`, e.message);
+        }
+      }
+    }
+  }
+});
+
+process.once('SIGINT',  () => masterBot.stop('SIGINT'));
+process.once('SIGTERM', () => masterBot.stop('SIGTERM'));

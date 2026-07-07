@@ -35,6 +35,33 @@ async function migrate() {
       reference   VARCHAR(100),
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS admins (
+      id          SERIAL PRIMARY KEY,
+      telegram_id BIGINT UNIQUE NOT NULL,
+      name        VARCHAR(100),
+      email       VARCHAR(255),
+      role        VARCHAR(20) DEFAULT 'admin',
+      added_by    BIGINT,
+      created_at  TIMESTAMP DEFAULT NOW(),
+      active      BOOLEAN DEFAULT true
+   );
+
+    CREATE TABLE IF NOT EXISTS tenants (
+      id               SERIAL PRIMARY KEY,
+      tenant_id        VARCHAR(50) UNIQUE NOT NULL,
+      name             VARCHAR(100),
+      email            VARCHAR(255),
+      telegram_id      BIGINT,
+      bot_token        VARCHAR(200) UNIQUE,
+      paystack_secret  VARCHAR(200),
+      paystack_public  VARCHAR(200),
+      webhook_url      VARCHAR(200),
+      active           BOOLEAN DEFAULT true,
+      created_at       TIMESTAMP DEFAULT NOW()
+    );
+
+    
   `);
 
   console.log('✅ Database tables created successfully');
