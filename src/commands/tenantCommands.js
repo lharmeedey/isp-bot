@@ -1,7 +1,6 @@
 const db = require('../services/db');
 const { naira, gb, date, syncAge, usageBar, planKeyboard } = require('../services/helpers');
-const axios  = require('axios');
-const crypto = require('crypto');
+const axios = require('axios');
 
 const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
   .split(',').map(Number).filter(Boolean);
@@ -16,11 +15,11 @@ function register(bot, tenant) {
 
   const tid = tenant.tenant_id;
 
-  // Track registration state per tenant
+  // Per-tenant registration state
   const awaitingEmail = new Set();
   const awaitingName  = new Map();
 
-  // ── /start ──────────────────────────────────
+  // ── /start ────────────────────────────────────
   bot.command('start', async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
 
@@ -47,18 +46,18 @@ Let's get you set up.`
     );
 
     awaitingEmail.add(ctx.from.id);
-    return ctx.reply('Please enter your email address:');
+    return ctx.reply('Please enter your email address (e.g. you@example.com):');
   });
 
-  // ── /balance ─────────────────────────────────
+  // ── /balance ──────────────────────────────────
   bot.command('balance', async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
-    if (!user.plan) return ctx.reply('No active plan. Use /buy to get started.');
+    if (!user.plan) return ctx.reply('No active plan yet. Use /buy to get started.');
 
     const remaining = parseFloat(user.remaining_gb);
     const total     = parseFloat(user.total_gb);
-    const pct       = Math.round((remaining / total) * 100);
+    const pct       = total > 0 ? Math.round((remaining / total) * 100) : 0;
     const bar       = usageBar(remaining, total);
     const warn      = pct < 20 ? '\n\n⚠️ *Low data!* Recharge with /buy.' : '';
 
@@ -75,7 +74,7 @@ _Last updated: ${syncAge(user)}_${warn}`
     );
   });
 
-  // ── /buy ─────────────────────────────────────
+  // ── /buy ──────────────────────────────────────
   bot.command('buy', async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
@@ -85,18 +84,18 @@ _Last updated: ${syncAge(user)}_${warn}`
     });
   });
 
-  // ── Plan selection callback ───────────────────
+  // ── Plan selection ────────────────────────────
   bot.action(/^plan_\d+$/, async (ctx) => {
     await ctx.answerCbQuery();
     const user = await getUser(ctx.from.id, tid);
-    if (!user) return;
+    if (!user) return ctx.reply('Please /start first.');
 
     const planId = parseInt(ctx.callbackQuery.data.replace('plan_', ''));
     const plan   = plans.find(p => p.id === planId);
-    if (!plan) return;
+    if (!plan) return ctx.reply('Invalid plan. Try /buy again.');
 
     await ctx.editMessageText(
-      `🛒 *Order Summary*\n\nPlan: ${plan.label}\nValidity: ${plan.validity}\nAmount: ${naira(plan.price)}\n\nProceed?`,
+      `🛒 *Order Summary*\n\nPlan:     ${plan.label}\nValidity: ${plan.validity}\nAmount:   ${naira(plan.price)}\n\nProceed to payment?`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -109,7 +108,7 @@ _Last updated: ${syncAge(user)}_${warn}`
     );
   });
 
-  // ── Payment confirmation callback ─────────────
+  // ── Payment confirmation ───────────────────────
   bot.action(/^confirm_\d+$/, async (ctx) => {
     await ctx.answerCbQuery('Generating payment link...');
     const user = await getUser(ctx.from.id, tid);
@@ -127,8 +126,8 @@ _Last updated: ${syncAge(user)}_${warn}`
       const res = await axios.post(
         'https://api.paystack.co/transaction/initialize',
         {
-          email:        user.email,
-          amount:       plan.price * 100,
+          email:     user.email,
+          amount:    plan.price * 100,
           reference,
           metadata: {
             telegram_id: String(ctx.from.id),
@@ -141,7 +140,7 @@ _Last updated: ${syncAge(user)}_${warn}`
       );
 
       await ctx.editMessageText(
-        `💳 *Complete Your Payment*\n\nPlan: ${plan.label}\nAmount: ${naira(plan.price)}\n\n_Tap Pay Now to complete. Data activates automatically after payment._`,
+        `💳 *Complete Your Payment*\n\nPlan:   ${plan.label}\nAmount: ${naira(plan.price)}\n\n_Tap Pay Now to complete. Data activates automatically after payment._`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -189,17 +188,26 @@ _Last updated: ${syncAge(user)}_${warn}`
 
 Please describe your issue and an agent will respond shortly.
 
-Or email us at: ${tenant.email || 'support@yourcompany.com'}`
+Email: ${tenant.email || 'support@yourcompany.com'}`
     );
   });
 
   // ── Admin commands ────────────────────────────
   bot.command('sales', adminOnly(tid, async (ctx) => {
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
     const [tx, rev] = await Promise.all([
-      db.query('SELECT COUNT(*) FROM purchases WHERE tenant_id=$1 AND date>=$2', [tid, todayStart]),
-      db.query('SELECT COALESCE(SUM(amount),0) as total FROM purchases WHERE tenant_id=$1 AND date>=$2', [tid, todayStart]),
+      db.query(
+        'SELECT COUNT(*) FROM purchases WHERE tenant_id=$1 AND date>=$2',
+        [tid, todayStart]
+      ),
+      db.query(
+        'SELECT COALESCE(SUM(amount),0) as total FROM purchases WHERE tenant_id=$1 AND date>=$2',
+        [tid, todayStart]
+      ),
     ]);
+
     return ctx.replyWithMarkdown(
 `📈 *Today's Sales*
 
@@ -274,17 +282,19 @@ Inactive: *${map['inactive'] || 0}*`
     );
   }));
 
-  // ── Free text handler (registration) ─────────
+  // ── Free text — registration flow ─────────────
   bot.on('text', async (ctx, next) => {
     const userId = ctx.from.id;
-    const text   = ctx.message.text.trim();
+    const text   = ctx.message?.text?.trim();
+    if (!text) return next();
 
+    // Step 1 — email
     if (awaitingEmail.has(userId)) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(text)) {
         return ctx.reply('Invalid email. Try again (e.g. you@example.com):');
       }
-      const email = text.toLowerCase();
+      const email  = text.toLowerCase();
       const exists = await db.query(
         'SELECT telegram_id FROM users WHERE email=$1 AND tenant_id=$2',
         [email, tid]
@@ -298,6 +308,7 @@ Inactive: *${map['inactive'] || 0}*`
       return ctx.reply(`Got it — ${email}.\n\nNow enter your full name:`);
     }
 
+    // Step 2 — name
     if (awaitingName.has(userId)) {
       const email = awaitingName.get(userId);
       const name  = text;
@@ -317,7 +328,7 @@ Inactive: *${map['inactive'] || 0}*`
 Name:  ${name}
 Email: ${email}
 
-Use /buy to purchase a plan.`
+Use /buy to purchase a data plan.`
       );
     }
 
@@ -325,7 +336,7 @@ Use /buy to purchase a plan.`
   });
 }
 
-// ── Helpers ───────────────────────────────────
+// ── Helpers ────────────────────────────────────
 async function getUser(telegramId, tenantId) {
   const res = await db.query(
     'SELECT * FROM users WHERE telegram_id=$1 AND tenant_id=$2',
@@ -335,9 +346,6 @@ async function getUser(telegramId, tenantId) {
 }
 
 function adminOnly(tenantId, handler) {
-  const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
-    .split(',').map(Number).filter(Boolean);
-
   return async (ctx) => {
     const userId = ctx.from?.id;
     if (SUPER_ADMIN_IDS.includes(userId)) return handler(ctx);

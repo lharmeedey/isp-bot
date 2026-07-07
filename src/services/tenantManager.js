@@ -1,61 +1,76 @@
 const { Telegraf } = require('telegraf');
-const db = require('./db');
+const db      = require('./db');
 const express = require('express');
 const crypto  = require('crypto');
 
-// Map of tenant_id → { bot, app, store }
 const tenantBots = new Map();
 
 // ── Load and launch all active tenants ────────
 async function launchAllTenants() {
-  const res = await db.query(
-    'SELECT * FROM tenants WHERE active=true AND bot_token IS NOT NULL'
-  );
+  try {
+    const res = await db.query(
+      'SELECT * FROM tenants WHERE active=true AND bot_token IS NOT NULL'
+    );
 
-  for (const tenant of res.rows) {
-    await launchTenant(tenant);
+    for (const tenant of res.rows) {
+      try {
+        await launchTenant(tenant);
+      } catch (err) {
+        console.error(`Skipping tenant ${tenant.tenant_id}:`, err.message);
+      }
+    }
+
+    console.log(`✅ Launched ${res.rows.length} tenant bot(s)`);
+  } catch (err) {
+    console.error('launchAllTenants error:', err.message);
   }
-
-  console.log(`✅ Launched ${res.rows.length} tenant bots`);
 }
 
 // ── Launch a single tenant bot ─────────────────
 async function launchTenant(tenant) {
   if (tenantBots.has(tenant.tenant_id)) {
-    console.log(`Bot already running for tenant: ${tenant.tenant_id}`);
+    console.log(`Already running: ${tenant.tenant_id}`);
     return;
   }
 
-  try {
-    const bot = new Telegraf(tenant.bot_token);
-
-    // Attach tenant context to every update
-    bot.use((ctx, next) => {
-      ctx.tenant = tenant;
-      return next();
-    });
-
-    // Register all commands
-    registerCommands(bot, tenant);
-
-    // Start bot
-    if (tenant.webhook_url) {
-      await bot.telegram.setWebhook(`${tenant.webhook_url}/bot/${tenant.tenant_id}`);
-      console.log(`✅ Webhook set for ${tenant.name}`);
-    } else {
-      bot.launch();
-      console.log(`✅ Polling started for ${tenant.name}`);
-    }
-
-    tenantBots.set(tenant.tenant_id, { bot, tenant });
-    console.log(`🤖 Bot launched for tenant: ${tenant.name} (${tenant.tenant_id})`);
-
-  } catch (err) {
-    console.error(`Failed to launch bot for ${tenant.tenant_id}:`, err.message);
+  if (!tenant.bot_token) {
+    throw new Error(`No bot token for tenant: ${tenant.tenant_id}`);
   }
+
+  console.log(`[launch] Starting ${tenant.name} (${tenant.tenant_id})...`);
+
+  const bot = new Telegraf(tenant.bot_token);
+
+  // Attach tenant to every ctx
+  bot.use((ctx, next) => {
+    ctx.tenant = tenant;
+    return next();
+  });
+
+  // Global error handler so one bad update doesn't kill the bot
+  bot.catch((err, ctx) => {
+    console.error(`[${tenant.tenant_id}] Bot error:`, err.message);
+  });
+
+  // Register customer + admin commands
+  require('../commands/tenantCommands').register(bot, tenant);
+
+  if (tenant.webhook_url) {
+    await bot.telegram.setWebhook(`${tenant.webhook_url}/bot/${tenant.tenant_id}`);
+    console.log(`[launch] Webhook set for ${tenant.name}`);
+  } else {
+    // polling — do NOT await, it blocks forever
+    bot.launch().catch(err => {
+      console.error(`[${tenant.tenant_id}] Polling error:`, err.message);
+    });
+    console.log(`[launch] Polling started for ${tenant.name}`);
+  }
+
+  tenantBots.set(tenant.tenant_id, { bot, tenant });
+  console.log(`[launch] ✅ Live: ${tenant.name} (${tenant.tenant_id})`);
 }
 
-// ── Stop a tenant bot ─────────────────────────
+// ── Stop a tenant bot ──────────────────────────
 async function stopTenant(tenantId) {
   const entry = tenantBots.get(tenantId);
   if (!entry) return;
@@ -63,38 +78,35 @@ async function stopTenant(tenantId) {
   try {
     entry.bot.stop();
     tenantBots.delete(tenantId);
-    console.log(`🛑 Bot stopped for tenant: ${tenantId}`);
+    console.log(`🛑 Stopped: ${tenantId}`);
   } catch (err) {
-    console.error(`Failed to stop bot for ${tenantId}:`, err.message);
+    console.error(`stopTenant error (${tenantId}):`, err.message);
   }
 }
 
-// ── Register all commands on a bot instance ───
+// ── Register commands ──────────────────────────
 function registerCommands(bot, tenant) {
-  const commands = require('../commands/tenantCommands');
-  commands.register(bot, tenant);
+  require('../commands/tenantCommands').register(bot, tenant);
 }
 
-// ── Express router for all tenant webhooks ────
+// ── Express webhook router ─────────────────────
 function createWebhookRouter(masterApp) {
-  // Tenant bot webhooks — /bot/:tenantId
+  // Tenant bot updates
   masterApp.post('/bot/:tenantId', express.json(), async (req, res) => {
-    const { tenantId } = req.params;
-    const entry = tenantBots.get(tenantId);
-
-    if (!entry) {
-      return res.sendStatus(404);
+    const entry = tenantBots.get(req.params.tenantId);
+    if (!entry) return res.sendStatus(404);
+    try {
+      await entry.bot.handleUpdate(req.body);
+      res.sendStatus(200);
+    } catch (err) {
+      console.error(`Webhook error (${req.params.tenantId}):`, err.message);
+      res.sendStatus(500);
     }
-
-    await entry.bot.handleUpdate(req.body);
-    res.sendStatus(200);
   });
 
-  // Paystack webhooks — /pay/:tenantId
+  // Paystack payment webhooks
   masterApp.post('/pay/:tenantId', express.raw({ type: 'application/json' }), async (req, res) => {
-    const { tenantId } = req.params;
-    const entry = tenantBots.get(tenantId);
-
+    const entry = tenantBots.get(req.params.tenantId);
     if (!entry) return res.sendStatus(404);
 
     const signature = req.headers['x-paystack-signature'];
@@ -105,74 +117,94 @@ function createWebhookRouter(masterApp) {
 
     if (hash !== signature) return res.sendStatus(401);
 
-    const event = JSON.parse(req.body);
-    if (event.event === 'charge.success') {
-      await handlePayment(entry.bot, entry.tenant, event.data);
-    }
-
+    // Acknowledge Paystack immediately
     res.sendStatus(200);
+
+    try {
+      const event = JSON.parse(req.body);
+      if (event.event === 'charge.success') {
+        await handlePayment(entry.bot, entry.tenant, event.data);
+      }
+    } catch (err) {
+      console.error(`Payment error (${req.params.tenantId}):`, err.message);
+    }
+  });
+
+  // Health check
+  masterApp.get('/health', (_, res) => {
+    res.json({
+      status:        'ok',
+      activeTenants: tenantBots.size,
+      tenants:       Array.from(tenantBots.keys()),
+      uptime:        Math.floor(process.uptime()),
+    });
   });
 }
 
-// ── Handle successful payment ─────────────────
+// ── Handle confirmed Paystack payment ─────────
 async function handlePayment(bot, tenant, data) {
-  try {
-    const { telegram_id, plan, email } = data.metadata;
-    const tid = Number(telegram_id);
+  const { telegram_id, plan, email } = data.metadata || {};
 
-    // Activate plan
-    await db.query(
-      `UPDATE users
-       SET plan=$1, remaining_gb=$2, total_gb=$3,
-           expiry=NOW() + INTERVAL '30 days',
-           status='active', last_sync=NOW()
-       WHERE telegram_id=$4 AND tenant_id=$5`,
-      [plan,
-       getPlanGb(plan, tenant),
-       getPlanGb(plan, tenant),
-       tid,
-       tenant.tenant_id]
-    );
+  if (!telegram_id || !plan || !email) {
+    console.error('handlePayment: missing metadata', data.metadata);
+    return;
+  }
 
-    // Record purchase
-    await db.query(
-      `INSERT INTO purchases (telegram_id, tenant_id, email, plan, amount, reference)
-       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (reference) DO NOTHING`,
-      [tid, tenant.tenant_id, email, plan, data.amount / 100, data.reference]
-    );
+  const tid = Number(telegram_id);
 
-    // Generate voucher
-    const code = generateCode();
-    await db.query(
-      `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, reference)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [tid, tenant.tenant_id, email, plan, code, data.reference]
-    );
+  // Prevent duplicate processing
+  const dup = await db.query(
+    'SELECT id FROM purchases WHERE reference=$1',
+    [data.reference]
+  );
+  if (dup.rows.length) {
+    console.log(`Duplicate payment ignored: ${data.reference}`);
+    return;
+  }
 
-    // Notify user
-    await bot.telegram.sendMessage(
-      tid,
+  const plans   = JSON.parse(process.env.PLANS || '[]');
+  const planObj = plans.find(p => p.label === plan);
+  const planGb  = planObj?.gb || 0;
+  const days    = planObj?.validity?.includes('7') ? 7 : 30;
+
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + days);
+
+  await db.query(
+    `UPDATE users
+     SET plan=$1, remaining_gb=$2, total_gb=$3,
+         expiry=$4, status='active', last_sync=NOW()
+     WHERE telegram_id=$5 AND tenant_id=$6`,
+    [plan, planGb, planGb, expiry.toISOString().slice(0, 10), tid, tenant.tenant_id]
+  );
+
+  await db.query(
+    `INSERT INTO purchases (telegram_id, tenant_id, email, plan, amount, reference)
+     VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (reference) DO NOTHING`,
+    [tid, tenant.tenant_id, email, plan, data.amount / 100, data.reference]
+  );
+
+  const code = generateCode();
+  await db.query(
+    `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, reference)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [tid, tenant.tenant_id, email, plan, code, data.reference]
+  );
+
+  await bot.telegram.sendMessage(
+    tid,
 `✅ *Payment Confirmed!*
 
 Username: \`${email}\`
 Password: \`${code}\`
 Plan:     *${plan}*
+Expiry:   ${expiry.toDateString()}
 
 _Your data is now active. Save your password to connect._`,
-      { parse_mode: 'Markdown' }
-    );
+    { parse_mode: 'Markdown' }
+  );
 
-    console.log(`✅ Payment processed: ${plan} for ${email} (${tenant.tenant_id})`);
-
-  } catch (err) {
-    console.error('Payment handler error:', err.message);
-  }
-}
-
-function getPlanGb(planLabel, tenant) {
-  const plans = JSON.parse(process.env.PLANS || '[]');
-  const plan  = plans.find(p => p.label === planLabel);
-  return plan?.gb || 0;
+  console.log(`✅ Payment done: ${plan} for ${email} (${tenant.tenant_id})`);
 }
 
 function generateCode() {
