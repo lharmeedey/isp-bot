@@ -123,6 +123,8 @@ _Last updated: ${syncAge(user)}_${warn}`
     try {
       await ctx.editMessageText('⏳ Creating payment link...');
 
+      console.log(`[buy] tenant=${tid} secret_starts_with=${tenant.paystack_secret?.slice(0,10)}`);
+      
       const res = await axios.post(
         'https://api.paystack.co/transaction/initialize',
         {
