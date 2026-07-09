@@ -177,7 +177,37 @@ _Their bot is live right now._`
 
   return next();
 }
+async function reloadTenant(ctx) {
+  const parts    = ctx.message.text.split(' ');
+  const tenantId = parts[1];
 
+  if (!tenantId) {
+    return ctx.reply('Usage: /reloadtenant tenant_id\n\nExample:\n/reloadtenant tenant_1783594930708');
+  }
+
+  const res = await db.query(
+    'SELECT * FROM tenants WHERE tenant_id=$1',
+    [tenantId]
+  );
+
+  if (!res.rows.length) {
+    return ctx.reply(`❌ Tenant not found: ${tenantId}`);
+  }
+
+  const tenant = res.rows[0];
+
+  await tenantManager.stopTenant(tenantId);
+  await tenantManager.launchTenant(tenant);
+
+  return ctx.replyWithMarkdown(
+`✅ *Tenant Reloaded!*
+
+Name:      ${tenant.name}
+Tenant ID: \`${tenantId}\`
+
+Fresh keys loaded from database.`
+  );
+}
 module.exports = {
   startAddTenant,
   listTenants,
@@ -185,4 +215,6 @@ module.exports = {
   deactivateTenant,
   handleDeactivateCallback,
   handleSuperAdminText,
+  fixWebhooks,
+  reloadTenant,
 };

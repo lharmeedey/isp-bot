@@ -49,7 +49,7 @@ masterBot.command('addtenant',    superAdminOnly(superAdmin.startAddTenant));
 masterBot.command('listtenants',  superAdminOnly(superAdmin.listTenants));
 masterBot.command('totalrevenue', superAdminOnly(superAdmin.totalRevenue));
 masterBot.command('deactivate',   superAdminOnly(superAdmin.deactivateTenant));
-
+masterBot.command('reloadtenant', superAdminOnly(superAdmin.reloadTenant));
 masterBot.action(/^deactivate_.+$/, superAdminOnly(superAdmin.handleDeactivateCallback));
 
 masterBot.on('text', (ctx, next) =>
