@@ -120,11 +120,10 @@ _Last updated: ${syncAge(user)}_${warn}`
 
     const reference = `${tid}-${ctx.from.id}-${Date.now()}`;
 
-    try {
-      await ctx.editMessageText('⏳ Creating payment link...');
+  try {
+  await ctx.editMessageText('⏳ Creating payment link...');
+  console.log(`[buy] secret in memory=${JSON.stringify(tenant.paystack_secret)}`);
 
-      console.log(`[buy] tenant=${tid} secret_starts_with=${tenant.paystack_secret?.slice(0,10)}`);
-      
       const res = await axios.post(
         'https://api.paystack.co/transaction/initialize',
         {
