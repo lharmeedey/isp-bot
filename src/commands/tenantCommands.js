@@ -151,10 +151,13 @@ _Last updated: ${syncAge(user)}_${warn}`
         }
       );
 
-    } catch (err) {
-      console.error(`Paystack error (${tid}):`, err.message);
-      await ctx.editMessageText('❌ Could not create payment link. Try again or contact /support.');
-    }
+} catch (err) {
+  const errorDetail = err.response?.data
+    ? JSON.stringify(err.response.data)
+    : err.message;
+  console.error(`Paystack error (${tid}):`, errorDetail);
+  await ctx.editMessageText(`❌ Payment error: ${errorDetail}`);
+}
   });
 
   bot.action('cancel_buy', async (ctx) => {
