@@ -215,6 +215,5 @@ module.exports = {
   deactivateTenant,
   handleDeactivateCallback,
   handleSuperAdminText,
-  fixWebhooks,
   reloadTenant,
 };
