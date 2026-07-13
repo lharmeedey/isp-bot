@@ -366,17 +366,28 @@ async function getUser(telegramId, tenantId) {
   return res.rows[0] || null;
 }
 
+
 function adminOnly(tenantId, handler) {
   return async (ctx) => {
     const userId = ctx.from?.id;
+
+    // Super admin always has access
     if (SUPER_ADMIN_IDS.includes(userId)) return handler(ctx);
 
-    const res = await db.query(
-      'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
-      [userId, tenantId]
+    // Tenant owner has full access
+    const tenantRes = await db.query(
+      'SELECT telegram_id FROM tenants WHERE tenant_id=$1',
+      [tenantId]
     );
-    if (!res.rows.length) return ctx.reply('⛔ Admin access only.');
-    return handler(ctx);
+    if (tenantRes.rows[0]?.telegram_id === userId) return handler(ctx);
+
+  //   // Sub-admins added via /addadmin
+  //   const adminRes = await db.query(
+  //     'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
+  //     [userId, tenantId]
+  //   );
+  //   if (!adminRes.rows.length) return ctx.reply('⛔ Admin access only.');
+  //   return handler(ctx);
   };
 }
 
