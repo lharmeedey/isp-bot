@@ -371,24 +371,44 @@ function adminOnly(tenantId, handler) {
   return async (ctx) => {
     const userId = ctx.from?.id;
 
-    // Super admin always has access
-    if (SUPER_ADMIN_IDS.includes(userId)) return handler(ctx);
+    console.log(`[adminOnly] userId=${userId} tenantId=${tenantId}`);
 
-    // Tenant owner has full access
+    // Super admin always has access
+    if (SUPER_ADMIN_IDS.includes(userId)) {
+      console.log(`[adminOnly] granted — super admin`);
+      return handler(ctx);
+    }
+
+    // Always fetch fresh from DB — never use in-memory tenant object
     const tenantRes = await db.query(
       'SELECT telegram_id FROM tenants WHERE tenant_id=$1',
       [tenantId]
     );
-    if (tenantRes.rows[0]?.telegram_id === userId) return handler(ctx);
 
-  //   // Sub-admins added via /addadmin
-  //   const adminRes = await db.query(
-  //     'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
-  //     [userId, tenantId]
-  //   );
-  //   if (!adminRes.rows.length) return ctx.reply('⛔ Admin access only.');
-  //   return handler(ctx);
+    const ownerTelegramId = tenantRes.rows[0]?.telegram_id;
+    console.log(`[adminOnly] owner in DB=${ownerTelegramId} caller=${userId} match=${ownerTelegramId == userId}`);
+
+    // Use == not === because DB may return string, ctx returns number
+    if (ownerTelegramId == userId) {
+      console.log(`[adminOnly] granted — tenant owner`);
+      return handler(ctx);
+    }
+
+    // Sub-admins added via /addadmin
+    const adminRes = await db.query(
+      'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
+      [userId, tenantId]
+    );
+
+    if (!adminRes.rows.length) {
+      console.log(`[adminOnly] denied — not admin`);
+      return ctx.reply('⛔ Admin access only.');
+    }
+
+    console.log(`[adminOnly] granted — sub admin`);
+    return handler(ctx);
   };
+
 }
 
 module.exports = { register };
