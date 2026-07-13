@@ -121,8 +121,25 @@ _Last updated: ${syncAge(user)}_${warn}`
     const reference = `${tid}-${ctx.from.id}-${Date.now()}`;
 
   try {
-  await ctx.editMessageText('⏳ Creating payment link...');
-  console.log(`[buy] tenant=${tid} secret=${tenant.paystack_secret?.slice(0,15)}`);
+      await ctx.editMessageText('⏳ Creating payment link...');
+
+      // Always fetch fresh keys from DB — never rely on closure
+      const freshTenant = await db.query(
+        'SELECT * FROM tenants WHERE tenant_id=$1',
+        [tid]
+      );
+
+      if (!freshTenant.rows.length) {
+        return ctx.editMessageText('❌ Tenant not found. Contact support.');
+      }
+
+      const paystackSecret = freshTenant.rows[0].paystack_secret;
+
+      console.log(`[buy] tenant=${tid} secret_preview=${paystackSecret?.slice(0,15)}`);
+
+      if (!paystackSecret || !paystackSecret.startsWith('sk_')) {
+        return ctx.editMessageText('❌ Payment not configured for this provider. Contact support.');
+      }
 
       const res = await axios.post(
         'https://api.paystack.co/transaction/initialize',
@@ -137,7 +154,7 @@ _Last updated: ${syncAge(user)}_${warn}`
             tenant_id:   tid,
           },
         },
-        { headers: { Authorization: `Bearer ${tenant.paystack_secret}` } }
+        { headers: { Authorization: `Bearer ${paystackSecret}` } }
       );
 
       await ctx.editMessageText(
