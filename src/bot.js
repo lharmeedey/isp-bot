@@ -50,6 +50,7 @@ masterBot.command('listtenants',  superAdminOnly(superAdmin.listTenants));
 masterBot.command('totalrevenue', superAdminOnly(superAdmin.totalRevenue));
 masterBot.command('deactivate',   superAdminOnly(superAdmin.deactivateTenant));
 masterBot.command('reloadtenant', superAdminOnly(superAdmin.reloadTenant));
+masterBot.command('fixwebhooks', superAdminOnly(superAdmin.fixWebhooks));
 masterBot.action(/^deactivate_.+$/, superAdminOnly(superAdmin.handleDeactivateCallback));
 
 masterBot.on('text', (ctx, next) =>
@@ -115,7 +116,19 @@ cron.schedule('*/15 * * * *', async () => {
       }
     }
   }
-});
 
+
+});
+// Keep Render awake — pings self every 10 minutes
+if (process.env.NODE_ENV === 'production') {
+  const https = require('https');
+  setInterval(() => {
+    https.get(`${process.env.WEBHOOK_URL}/health`, (res) => {
+      console.log(`Keep-alive ping: ${res.statusCode}`);
+    }).on('error', (err) => {
+      console.error('Keep-alive error:', err.message);
+    });
+  }, 10 * 60 * 1000);
+}
 process.once('SIGINT',  () => masterBot.stop('SIGINT'));
 process.once('SIGTERM', () => masterBot.stop('SIGTERM'));

@@ -59,6 +59,29 @@ async function handleDeactivateCallback(ctx) {
   await ctx.editMessageText(`✅ Tenant \`${tenantId}\` deactivated and bot stopped.`);
 }
 
+async function fixWebhooks(ctx) {
+  const webhookUrl = process.env.WEBHOOK_URL;
+  if (!webhookUrl) return ctx.reply('❌ WEBHOOK_URL not set in environment.');
+
+  const res = await db.query('SELECT * FROM tenants WHERE active=true');
+  if (!res.rows.length) return ctx.reply('No active tenants found.');
+
+  await ctx.reply(`⏳ Setting webhooks for ${res.rows.length} tenant(s)...`);
+
+  for (const tenant of res.rows) {
+    try {
+      const { Telegraf } = require('telegraf');
+      const bot = new Telegraf(tenant.bot_token);
+      await bot.telegram.setWebhook(`${webhookUrl}/bot/${tenant.tenant_id}`);
+      await ctx.reply(`✅ ${tenant.name}: webhook set`);
+    } catch (err) {
+      await ctx.reply(`❌ ${tenant.name}: ${err.message}`);
+    }
+  }
+
+  await ctx.reply('✅ Done.');
+}
+
 async function handleSuperAdminText(ctx, next) {
   const userId = ctx.from.id;
   const text   = ctx.message?.text?.trim();
@@ -215,5 +238,6 @@ module.exports = {
   deactivateTenant,
   handleDeactivateCallback,
   handleSuperAdminText,
+  fixWebhooks,
   reloadTenant,
 };
