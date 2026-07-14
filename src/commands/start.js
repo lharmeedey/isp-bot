@@ -13,10 +13,16 @@ Here's what you can do:
 
 /balance – Check your data balance  
 /buy – Purchase a data plan  
+/renewplan – Renew your current plan
 /history – View past purchases  
 /support – Contact support`
     );
   }
+
+
+
+
+  
 
   await ctx.replyWithMarkdown(
 `👋 Welcome to *SpeedNet ISP Bot*!

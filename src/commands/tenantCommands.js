@@ -214,6 +214,147 @@ _Last updated: ${syncAge(user)}_${warn}`
     await ctx.editMessageText('Purchase cancelled. Use /buy to start again.');
   });
 
+  // ── /renewplan ────────────────────────────────
+  bot.command('renewplan', rateLimit, async (ctx) => {
+    const user = await getUser(ctx.from.id, tid);
+    if (!user) return ctx.reply('Please send /start to register first.');
+
+    if (!user.plan) {
+      return ctx.replyWithMarkdown(
+`You don't have an active plan to renew.
+
+Use /buy to purchase a new plan.`
+      );
+    }
+
+    const currentPlan = plans.find(p => p.label === user.plan);
+    const expiry      = date(user.expiry);
+    const remaining   = parseFloat(user.remaining_gb);
+    const total       = parseFloat(user.total_gb);
+    const pct         = total > 0 ? Math.round((remaining / total) * 100) : 0;
+
+    // Show current plan info and renewal options
+    await ctx.replyWithMarkdown(
+`🔄 *Renew Your Plan*
+
+Current Plan: *${user.plan}*
+Remaining:    *${gb(remaining)}* (${pct}%)
+Expiry:       ${expiry}
+
+Choose how you want to renew:`
+    );
+
+    // Option 1 — renew same plan
+    // Option 2 — choose a different plan
+    return ctx.replyWithMarkdown('What would you like to do?', {
+      reply_markup: {
+        inline_keyboard: [
+          [{
+            text:          `🔁 Renew Same Plan (${user.plan} — ${naira(currentPlan?.price || 0)})`,
+            callback_data: `renew_same`,
+          }],
+          [{
+            text:          '📦 Choose Different Plan',
+            callback_data: 'renew_new',
+          }],
+          [{
+            text:          '❌ Cancel',
+            callback_data: 'cancel_buy',
+          }],
+        ],
+      },
+    });
+  });
+
+  // ── Renew same plan ───────────────────────────
+  bot.action('renew_same', async (ctx) => {
+    await ctx.answerCbQuery();
+
+    if (!paymentLimiter(String(ctx.from.id))) {
+      return ctx.editMessageText('⚠️ Too many payment attempts. Please wait a few minutes.');
+    }
+
+    const user = await getUser(ctx.from.id, tid);
+    if (!user?.plan) return ctx.editMessageText('No active plan found. Use /buy instead.');
+
+    const plan = plans.find(p => p.label === user.plan);
+    if (!plan) return ctx.editMessageText('Your current plan is no longer available. Use /buy to choose a new one.');
+
+    const reference = `renew-${tid}-${ctx.from.id}-${Date.now()}`;
+
+    try {
+      await ctx.editMessageText('⏳ Creating renewal payment link...');
+
+      const freshTenant = await db.query(
+        'SELECT paystack_secret FROM tenants WHERE tenant_id=$1',
+        [tid]
+      );
+
+      if (!freshTenant.rows.length) {
+        return ctx.editMessageText('❌ Configuration error. Contact support.');
+      }
+
+      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret);
+
+      if (!paystackSecret || !paystackSecret.startsWith('sk_')) {
+        return ctx.editMessageText('❌ Payment not configured. Contact support.');
+      }
+
+      const res = await axios.post(
+        'https://api.paystack.co/transaction/initialize',
+        {
+          email:     user.email,
+          amount:    plan.price * 100,
+          reference,
+          metadata: {
+            telegram_id: String(ctx.from.id),
+            plan:        plan.label,
+            email:       user.email,
+            tenant_id:   tid,
+            is_renewal:  'true',
+          },
+        },
+        {
+          headers: { Authorization: `Bearer ${paystackSecret}` },
+          timeout: 10000,
+        }
+      );
+
+      logger.info('Renewal payment link created', {
+        tenantId:  tid,
+        plan:      plan.label,
+        email:     user.email,
+        reference,
+      });
+
+      await ctx.editMessageText(
+        `🔄 *Renew ${plan.label}*\n\nAmount: ${naira(plan.price)}\nValidity: ${plan.validity}\n\n_Your data will be topped up immediately after payment._`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '💳 Pay Now', url: res.data.data.authorization_url },
+            ]],
+          },
+        }
+      );
+
+    } catch (err) {
+      const detail = err.response?.data?.message || err.message;
+      logger.error('Renewal payment error', { tenantId: tid, error: detail });
+      await ctx.editMessageText('❌ Could not create payment link. Please try again or contact /support.');
+    }
+  });
+
+  // ── Choose different plan for renewal ─────────
+  bot.action('renew_new', async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.editMessageText('📦 *Choose a new plan:*', {
+      parse_mode:   'Markdown',
+      reply_markup: { inline_keyboard: planKeyboard(plans) },
+    });
+  });
+
   // ── /history ──────────────────────────────────
   bot.command('history', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
