@@ -1,7 +1,10 @@
-const { Telegraf } = require('telegraf');
-const db      = require('./db');
-const express = require('express');
-const crypto  = require('crypto');
+const { Telegraf }         = require('telegraf');
+const db                   = require('./db');
+const express              = require('express');
+const crypto               = require('crypto');
+const logger               = require('./logger');
+const { decrypt }          = require('./encryption');
+const { webhookLimiter }   = require('./rateLimiter');
 
 const tenantBots = new Map();
 
@@ -12,24 +15,24 @@ async function launchAllTenants() {
       'SELECT * FROM tenants WHERE active=true AND bot_token IS NOT NULL'
     );
 
-    for (const tenant of res.rows) {
-      try {
-        await launchTenant(tenant);
-      } catch (err) {
-        console.error(`Skipping tenant ${tenant.tenant_id}:`, err.message);
-      }
-    }
+    const results = await Promise.allSettled(
+      res.rows.map(tenant => launchTenant(tenant))
+    );
 
-    console.log(`✅ Launched ${res.rows.length} tenant bot(s)`);
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed    = results.filter(r => r.status === 'rejected').length;
+
+    logger.info(`Tenant bots launched`, { succeeded, failed, total: res.rows.length });
+
   } catch (err) {
-    console.error('launchAllTenants error:', err.message);
+    logger.error('launchAllTenants failed', { error: err.message });
   }
 }
 
 // ── Launch a single tenant bot ─────────────────
 async function launchTenant(tenant) {
   if (tenantBots.has(tenant.tenant_id)) {
-    console.log(`Already running: ${tenant.tenant_id}`);
+    logger.warn(`Bot already running`, { tenantId: tenant.tenant_id });
     return;
   }
 
@@ -37,37 +40,52 @@ async function launchTenant(tenant) {
     throw new Error(`No bot token for tenant: ${tenant.tenant_id}`);
   }
 
-  console.log(`[launch] Starting ${tenant.name} (${tenant.tenant_id})...`);
+  logger.info(`Launching tenant bot`, { name: tenant.name, tenantId: tenant.tenant_id });
 
-  const bot = new Telegraf(tenant.bot_token);
+  // Decrypt bot token — handles both encrypted and plain text
+  const botToken = decrypt(tenant.bot_token);
+  if (!botToken) throw new Error(`Could not decrypt bot token for: ${tenant.tenant_id}`);
 
-  // Attach tenant to every ctx
+  const bot = new Telegraf(botToken, { handlerTimeout: 90000 });
+
+  // Attach decrypted tenant data to every ctx
   bot.use((ctx, next) => {
-    ctx.tenant = tenant;
+    ctx.tenant = {
+      ...tenant,
+      bot_token:        botToken,
+      paystack_secret:  decrypt(tenant.paystack_secret),
+      paystack_public:  decrypt(tenant.paystack_public),
+    };
     return next();
   });
 
-  // Global error handler so one bad update doesn't kill the bot
+  // Global error handler — prevents one bad update from crashing the bot
   bot.catch((err, ctx) => {
-    console.error(`[${tenant.tenant_id}] Bot error:`, err.message);
+    logger.error(`Bot error`, {
+      tenantId: tenant.tenant_id,
+      error:    err.message,
+      updateId: ctx?.update?.update_id,
+    });
   });
 
-  // Register customer + admin commands
+  // Register all commands
   require('../commands/tenantCommands').register(bot, tenant);
 
   if (tenant.webhook_url) {
-    await bot.telegram.setWebhook(`${tenant.webhook_url}/bot/${tenant.tenant_id}`);
-    console.log(`[launch] Webhook set for ${tenant.name}`);
+    await bot.telegram.setWebhook(
+      `${tenant.webhook_url}/bot/${tenant.tenant_id}`,
+      { max_connections: 40 }
+    );
+    logger.info(`Webhook set`, { name: tenant.name, tenantId: tenant.tenant_id });
   } else {
-    // polling — do NOT await, it blocks forever
     bot.launch().catch(err => {
-      console.error(`[${tenant.tenant_id}] Polling error:`, err.message);
+      logger.error(`Polling error`, { tenantId: tenant.tenant_id, error: err.message });
     });
-    console.log(`[launch] Polling started for ${tenant.name}`);
+    logger.info(`Polling started`, { name: tenant.name, tenantId: tenant.tenant_id });
   }
 
   tenantBots.set(tenant.tenant_id, { bot, tenant });
-  console.log(`[launch] ✅ Live: ${tenant.name} (${tenant.tenant_id})`);
+  logger.info(`Bot live`, { name: tenant.name, tenantId: tenant.tenant_id });
 }
 
 // ── Stop a tenant bot ──────────────────────────
@@ -76,67 +94,105 @@ async function stopTenant(tenantId) {
   if (!entry) return;
 
   try {
+    if (entry.tenant.webhook_url) {
+      await entry.bot.telegram.deleteWebhook().catch(() => {});
+    }
     entry.bot.stop();
     tenantBots.delete(tenantId);
-    console.log(`🛑 Stopped: ${tenantId}`);
+    logger.info(`Bot stopped`, { tenantId });
   } catch (err) {
-    console.error(`stopTenant error (${tenantId}):`, err.message);
+    logger.error(`stopTenant error`, { tenantId, error: err.message });
   }
-}
-
-// ── Register commands ──────────────────────────
-function registerCommands(bot, tenant) {
-  require('../commands/tenantCommands').register(bot, tenant);
 }
 
 // ── Express webhook router ─────────────────────
 function createWebhookRouter(masterApp) {
+
+  // Rate limit middleware using IP
+  const rateLimitMiddleware = (req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    if (!webhookLimiter(ip)) {
+      logger.warn('Rate limit exceeded', { ip, path: req.path });
+      return res.sendStatus(429);
+    }
+    next();
+  };
+
   // Tenant bot updates
-  masterApp.post('/bot/:tenantId', express.json(), async (req, res) => {
-    const entry = tenantBots.get(req.params.tenantId);
-    if (!entry) return res.sendStatus(404);
+  masterApp.post('/bot/:tenantId', rateLimitMiddleware, express.json(), async (req, res) => {
+    const { tenantId } = req.params;
+    const entry = tenantBots.get(tenantId);
+
+    if (!entry) {
+      logger.warn(`Webhook for unknown tenant`, { tenantId });
+      return res.sendStatus(404);
+    }
+
     try {
-      await entry.bot.handleUpdate(req.body);
-      res.sendStatus(200);
+      await entry.bot.handleUpdate(req.body, res);
     } catch (err) {
-      console.error(`Webhook error (${req.params.tenantId}):`, err.message);
-      res.sendStatus(500);
+      logger.error(`Webhook handling error`, { tenantId, error: err.message });
+      if (!res.headersSent) res.sendStatus(500);
     }
   });
 
   // Paystack payment webhooks
-  masterApp.post('/pay/:tenantId', express.raw({ type: 'application/json' }), async (req, res) => {
-    const entry = tenantBots.get(req.params.tenantId);
-    if (!entry) return res.sendStatus(404);
+  masterApp.post(
+    '/pay/:tenantId',
+    rateLimitMiddleware,
+    express.raw({ type: 'application/json' }),
+    async (req, res) => {
+      const { tenantId } = req.params;
+      const entry = tenantBots.get(tenantId);
 
-    const signature = req.headers['x-paystack-signature'];
-    const hash = crypto
-      .createHmac('sha512', entry.tenant.paystack_secret)
-      .update(req.body)
-      .digest('hex');
-
-    if (hash !== signature) return res.sendStatus(401);
-
-    // Acknowledge Paystack immediately
-    res.sendStatus(200);
-
-    try {
-      const event = JSON.parse(req.body);
-      if (event.event === 'charge.success') {
-        await handlePayment(entry.bot, entry.tenant, event.data);
+      if (!entry) {
+        logger.warn(`Payment webhook for unknown tenant`, { tenantId });
+        return res.sendStatus(404);
       }
-    } catch (err) {
-      console.error(`Payment error (${req.params.tenantId}):`, err.message);
+
+      // Validate Paystack signature
+      const signature    = req.headers['x-paystack-signature'];
+      const paystackSecret = decrypt(entry.tenant.paystack_secret);
+
+      const hash = crypto
+        .createHmac('sha512', paystackSecret)
+        .update(req.body)
+        .digest('hex');
+
+      if (hash !== signature) {
+        logger.warn(`Invalid Paystack signature`, { tenantId });
+        return res.sendStatus(401);
+      }
+
+      // Acknowledge immediately — Paystack needs fast response
+      res.sendStatus(200);
+
+      try {
+        const event = JSON.parse(req.body);
+        if (event.event === 'charge.success') {
+          await handlePayment(entry.bot, entry.tenant, event.data);
+        }
+      } catch (err) {
+        logger.error(`Payment processing error`, { tenantId, error: err.message });
+      }
     }
-  });
+  );
 
   // Health check
   masterApp.get('/health', (_, res) => {
+    const tenants = Array.from(tenantBots.entries()).map(([id, { tenant }]) => ({
+      id,
+      name:   tenant.name,
+      active: true,
+    }));
+
     res.json({
       status:        'ok',
       activeTenants: tenantBots.size,
-      tenants:       Array.from(tenantBots.keys()),
+      tenants,
       uptime:        Math.floor(process.uptime()),
+      memory:        process.memoryUsage().heapUsed,
+      timestamp:     new Date().toISOString(),
     });
   });
 }
@@ -146,11 +202,12 @@ async function handlePayment(bot, tenant, data) {
   const { telegram_id, plan, email } = data.metadata || {};
 
   if (!telegram_id || !plan || !email) {
-    console.error('handlePayment: missing metadata', data.metadata);
+    logger.error('Payment missing metadata', { metadata: data.metadata });
     return;
   }
 
-  const tid = Number(telegram_id);
+  const tid      = Number(telegram_id);
+  const tenantId = tenant.tenant_id;
 
   // Prevent duplicate processing
   const dup = await db.query(
@@ -158,7 +215,7 @@ async function handlePayment(bot, tenant, data) {
     [data.reference]
   );
   if (dup.rows.length) {
-    console.log(`Duplicate payment ignored: ${data.reference}`);
+    logger.warn(`Duplicate payment ignored`, { reference: data.reference });
     return;
   }
 
@@ -170,29 +227,36 @@ async function handlePayment(bot, tenant, data) {
   const expiry = new Date();
   expiry.setDate(expiry.getDate() + days);
 
-  await db.query(
-    `UPDATE users
-     SET plan=$1, remaining_gb=$2, total_gb=$3,
-         expiry=$4, status='active', last_sync=NOW()
-     WHERE telegram_id=$5 AND tenant_id=$6`,
-    [plan, planGb, planGb, expiry.toISOString().slice(0, 10), tid, tenant.tenant_id]
-  );
+  // Use DB transaction — all writes succeed or all fail
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
 
-  await db.query(
-    `INSERT INTO purchases (telegram_id, tenant_id, email, plan, amount, reference)
-     VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (reference) DO NOTHING`,
-    [tid, tenant.tenant_id, email, plan, data.amount / 100, data.reference]
-  );
+    await client.query(
+      `UPDATE users
+       SET plan=$1, remaining_gb=$2, total_gb=$3,
+           expiry=$4, status='active', last_sync=NOW()
+       WHERE telegram_id=$5 AND tenant_id=$6`,
+      [plan, planGb, planGb, expiry.toISOString().slice(0, 10), tid, tenantId]
+    );
 
-  const code = generateCode();
-  await db.query(
-    `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, reference)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [tid, tenant.tenant_id, email, plan, code, data.reference]
-  );
+    await client.query(
+      `INSERT INTO purchases (telegram_id, tenant_id, email, plan, amount, reference)
+       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (reference) DO NOTHING`,
+      [tid, tenantId, email, plan, data.amount / 100, data.reference]
+    );
 
-  await bot.telegram.sendMessage(
-    tid,
+    const code = generateCode();
+    await client.query(
+      `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, reference)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [tid, tenantId, email, plan, code, data.reference]
+    );
+
+    await client.query('COMMIT');
+
+    await bot.telegram.sendMessage(
+      tid,
 `✅ *Payment Confirmed!*
 
 Username: \`${email}\`
@@ -201,10 +265,26 @@ Plan:     *${plan}*
 Expiry:   ${expiry.toDateString()}
 
 _Your data is now active. Save your password to connect._`,
-    { parse_mode: 'Markdown' }
-  );
+      { parse_mode: 'Markdown' }
+    );
 
-  console.log(`✅ Payment done: ${plan} for ${email} (${tenant.tenant_id})`);
+    logger.info(`Payment processed`, {
+      plan,
+      email,
+      tenantId,
+      reference: data.reference,
+      amount:    data.amount / 100,
+    });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    logger.error(`Payment transaction failed`, {
+      reference: data.reference,
+      error:     err.message,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 function generateCode() {

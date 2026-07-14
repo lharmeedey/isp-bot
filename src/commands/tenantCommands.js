@@ -1,6 +1,9 @@
-const db = require('../services/db');
+const db      = require('../services/db');
+const logger  = require('../services/logger');
+const { decrypt }        = require('../services/encryption');
+const { commandLimiter, paymentLimiter } = require('../services/rateLimiter');
 const { naira, gb, date, syncAge, usageBar, planKeyboard } = require('../services/helpers');
-const axios = require('axios');
+const axios   = require('axios');
 
 const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
   .split(',').map(Number).filter(Boolean);
@@ -15,12 +18,22 @@ function register(bot, tenant) {
 
   const tid = tenant.tenant_id;
 
-  // Per-tenant registration state
-  const awaitingEmail = new Set();
-  const awaitingName  = new Map();
+  // Per-tenant registration state — persists in memory per bot instance
+  const awaitingEmail    = new Set();
+  const awaitingName     = new Map();
+  const awaitingSubAdmin = new Map();
+
+  // ── Rate limit middleware ─────────────────────
+  function rateLimit(ctx, next) {
+    const userId = ctx.from?.id;
+    if (!commandLimiter(String(userId))) {
+      return ctx.reply('⚠️ Too many requests. Please slow down.');
+    }
+    return next();
+  }
 
   // ── /start ────────────────────────────────────
-  bot.command('start', async (ctx) => {
+  bot.command('start', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
 
     if (user?.email) {
@@ -50,7 +63,7 @@ Let's get you set up.`
   });
 
   // ── /balance ──────────────────────────────────
-  bot.command('balance', async (ctx) => {
+  bot.command('balance', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
     if (!user.plan) return ctx.reply('No active plan yet. Use /buy to get started.');
@@ -75,7 +88,7 @@ _Last updated: ${syncAge(user)}_${warn}`
   });
 
   // ── /buy ──────────────────────────────────────
-  bot.command('buy', async (ctx) => {
+  bot.command('buy', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
 
@@ -87,6 +100,11 @@ _Last updated: ${syncAge(user)}_${warn}`
   // ── Plan selection ────────────────────────────
   bot.action(/^plan_\d+$/, async (ctx) => {
     await ctx.answerCbQuery();
+
+    if (!commandLimiter(String(ctx.from.id))) {
+      return ctx.reply('⚠️ Too many requests. Please slow down.');
+    }
+
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please /start first.');
 
@@ -111,6 +129,12 @@ _Last updated: ${syncAge(user)}_${warn}`
   // ── Payment confirmation ───────────────────────
   bot.action(/^confirm_\d+$/, async (ctx) => {
     await ctx.answerCbQuery('Generating payment link...');
+
+    // Rate limit payment attempts
+    if (!paymentLimiter(String(ctx.from.id))) {
+      return ctx.editMessageText('⚠️ Too many payment attempts. Please wait a few minutes and try again.');
+    }
+
     const user = await getUser(ctx.from.id, tid);
     if (!user) return;
 
@@ -120,25 +144,24 @@ _Last updated: ${syncAge(user)}_${warn}`
 
     const reference = `${tid}-${ctx.from.id}-${Date.now()}`;
 
-  try {
+    try {
       await ctx.editMessageText('⏳ Creating payment link...');
 
-      // Always fetch fresh keys from DB — never rely on closure
+      // Always fetch fresh from DB — never rely on closure
       const freshTenant = await db.query(
-        'SELECT * FROM tenants WHERE tenant_id=$1',
+        'SELECT paystack_secret FROM tenants WHERE tenant_id=$1',
         [tid]
       );
 
       if (!freshTenant.rows.length) {
-        return ctx.editMessageText('❌ Tenant not found. Contact support.');
+        return ctx.editMessageText('❌ Configuration error. Contact support.');
       }
 
-      const paystackSecret = freshTenant.rows[0].paystack_secret;
-
-      console.log(`[buy] tenant=${tid} secret_preview=${paystackSecret?.slice(0,15)}`);
+      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret);
 
       if (!paystackSecret || !paystackSecret.startsWith('sk_')) {
-        return ctx.editMessageText('❌ Payment not configured for this provider. Contact support.');
+        logger.error('Invalid Paystack secret', { tenantId: tid });
+        return ctx.editMessageText('❌ Payment not configured. Contact support.');
       }
 
       const res = await axios.post(
@@ -154,8 +177,18 @@ _Last updated: ${syncAge(user)}_${warn}`
             tenant_id:   tid,
           },
         },
-        { headers: { Authorization: `Bearer ${paystackSecret}` } }
+        {
+          headers:         { Authorization: `Bearer ${paystackSecret}` },
+          timeout:         10000,
+        }
       );
+
+      logger.info('Payment link created', {
+        tenantId:  tid,
+        plan:      plan.label,
+        email:     user.email,
+        reference,
+      });
 
       await ctx.editMessageText(
         `💳 *Complete Your Payment*\n\nPlan:   ${plan.label}\nAmount: ${naira(plan.price)}\n\n_Tap Pay Now to complete. Data activates automatically after payment._`,
@@ -169,13 +202,11 @@ _Last updated: ${syncAge(user)}_${warn}`
         }
       );
 
-} catch (err) {
-  const errorDetail = err.response?.data
-    ? JSON.stringify(err.response.data)
-    : err.message;
-  console.error(`Paystack error (${tid}):`, errorDetail);
-  await ctx.editMessageText(`❌ Payment error: ${errorDetail}`);
-}
+    } catch (err) {
+      const detail = err.response?.data?.message || err.message;
+      logger.error('Payment link error', { tenantId: tid, error: detail });
+      await ctx.editMessageText(`❌ Could not create payment link. Please try again or contact /support.`);
+    }
   });
 
   bot.action('cancel_buy', async (ctx) => {
@@ -184,7 +215,7 @@ _Last updated: ${syncAge(user)}_${warn}`
   });
 
   // ── /history ──────────────────────────────────
-  bot.command('history', async (ctx) => {
+  bot.command('history', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please /start first.');
 
@@ -303,11 +334,144 @@ Inactive: *${map['inactive'] || 0}*`
     );
   }));
 
-  // ── Free text — registration flow ─────────────
+  // ── Sub-admin management ──────────────────────
+  bot.command('addadmin', adminOnly(tid, async (ctx) => {
+    awaitingSubAdmin.set(ctx.from.id, { step: 'telegram_id' });
+    return ctx.replyWithMarkdown(
+`➕ *Add Sub-Admin*
+
+Send me the new admin's *Telegram ID*.
+They can get it by messaging @userinfobot.`
+    );
+  }));
+
+  bot.command('removeadmin', adminOnly(tid, async (ctx) => {
+    const admins = await db.query(
+      'SELECT * FROM admins WHERE tenant_id=$1 AND active=true',
+      [tid]
+    );
+    if (!admins.rows.length) return ctx.reply('No sub-admins found.');
+
+    const keyboard = admins.rows.map(a => ([{
+      text:          `${a.name} (${a.telegram_id})`,
+      callback_data: `removesub_${a.telegram_id}`,
+    }]));
+
+    return ctx.replyWithMarkdown('🗑 *Select admin to remove:*', {
+      reply_markup: { inline_keyboard: keyboard },
+    });
+  }));
+
+  bot.command('listadmins', adminOnly(tid, async (ctx) => {
+    const admins = await db.query(
+      'SELECT * FROM admins WHERE tenant_id=$1 AND active=true ORDER BY created_at DESC',
+      [tid]
+    );
+    if (!admins.rows.length) return ctx.reply('No sub-admins yet. Use /addadmin to add one.');
+
+    const lines = admins.rows.map(a =>
+      `• *${a.name}* — ID: \`${a.telegram_id}\` — ${a.email || 'no email'}`
+    ).join('\n');
+
+    return ctx.replyWithMarkdown(`👮 *Sub-Admins for ${tenant.name}*\n\n${lines}`);
+  }));
+
+  bot.action(/^removesub_\d+$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = parseInt(ctx.callbackQuery.data.replace('removesub_', ''));
+
+    await db.query(
+      'UPDATE admins SET active=false WHERE telegram_id=$1 AND tenant_id=$2',
+      [telegramId, tid]
+    );
+
+    logger.info('Sub-admin removed', { telegramId, tenantId: tid });
+    return ctx.editMessageText(`✅ Admin ${telegramId} removed successfully.`);
+  });
+
+  // ── Free text handler ──────────────────────────
   bot.on('text', async (ctx, next) => {
     const userId = ctx.from.id;
     const text   = ctx.message?.text?.trim();
     if (!text) return next();
+
+    // Skip commands
+    if (text.startsWith('/')) return next();
+
+    // ── Sub-admin registration flow ──────────────
+    if (awaitingSubAdmin.has(userId)) {
+      const state = awaitingSubAdmin.get(userId);
+
+      if (state.step === 'telegram_id') {
+        const newId = parseInt(text);
+        if (isNaN(newId)) return ctx.reply('Invalid Telegram ID. Send a number (e.g. 5926845553):');
+        state.newTelegramId = newId;
+        state.step = 'name';
+        awaitingSubAdmin.set(userId, state);
+        return ctx.reply('Now send their full name:');
+      }
+
+      if (state.step === 'name') {
+        if (text.length < 2) return ctx.reply('Name too short. Try again:');
+        state.name = text;
+        state.step = 'email';
+        awaitingSubAdmin.set(userId, state);
+        return ctx.reply('Now send their email address:');
+      }
+
+      if (state.step === 'email') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text)) return ctx.reply('Invalid email. Try again:');
+        state.email = text;
+        awaitingSubAdmin.delete(userId);
+
+        await db.query(
+          `INSERT INTO admins (telegram_id, tenant_id, name, email, added_by)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (telegram_id, tenant_id)
+           DO UPDATE SET active=true, name=$3, email=$4`,
+          [state.newTelegramId, tid, state.name, state.email, userId]
+        );
+
+        // Notify new admin
+        try {
+          await ctx.telegram.sendMessage(
+            state.newTelegramId,
+`👮 *You've been added as an admin for ${tenant.name}!*
+
+You now have access to:
+/sales — Today's sales
+/users — All users
+/revenue — Total revenue
+/stock — Bandwidth stock
+/online — Active users
+/addadmin — Add sub-admins
+/listadmins — View all admins`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch (e) {
+          logger.warn('Could not notify new sub-admin', { telegramId: state.newTelegramId });
+        }
+
+        logger.info('Sub-admin added', {
+          tenantId:    tid,
+          newAdminId:  state.newTelegramId,
+          addedBy:     userId,
+        });
+
+        return ctx.replyWithMarkdown(
+`✅ *Sub-Admin Added!*
+
+Name:        ${state.name}
+Email:       ${state.email}
+Telegram ID: \`${state.newTelegramId}\`
+
+They have been notified on Telegram.`
+        );
+      }
+    }
+
+    // ── Customer registration flow ────────────────
 
     // Step 1 — email
     if (awaitingEmail.has(userId)) {
@@ -343,6 +507,8 @@ Inactive: *${map['inactive'] || 0}*`
       );
       awaitingName.delete(userId);
 
+      logger.info('User registered', { tenantId: tid, email, telegramId: userId });
+
       return ctx.replyWithMarkdown(
 `✅ *Registration Complete!*
 
@@ -357,7 +523,7 @@ Use /buy to purchase a data plan.`
   });
 }
 
-// ── Helpers ────────────────────────────────────
+// ── Helpers ───────────────────────────────────
 async function getUser(telegramId, tenantId) {
   const res = await db.query(
     'SELECT * FROM users WHERE telegram_id=$1 AND tenant_id=$2',
@@ -366,49 +532,33 @@ async function getUser(telegramId, tenantId) {
   return res.rows[0] || null;
 }
 
-
 function adminOnly(tenantId, handler) {
   return async (ctx) => {
     const userId = ctx.from?.id;
 
-    console.log(`[adminOnly] userId=${userId} tenantId=${tenantId}`);
-
     // Super admin always has access
-    if (SUPER_ADMIN_IDS.includes(userId)) {
-      console.log(`[adminOnly] granted — super admin`);
-      return handler(ctx);
-    }
+    if (SUPER_ADMIN_IDS.includes(userId)) return handler(ctx);
 
-    // Always fetch fresh from DB — never use in-memory tenant object
+    // Always fetch fresh from DB
     const tenantRes = await db.query(
       'SELECT telegram_id FROM tenants WHERE tenant_id=$1',
       [tenantId]
     );
 
     const ownerTelegramId = tenantRes.rows[0]?.telegram_id;
-    console.log(`[adminOnly] owner in DB=${ownerTelegramId} caller=${userId} match=${ownerTelegramId == userId}`);
 
-    // Use == not === because DB may return string, ctx returns number
-    if (ownerTelegramId == userId) {
-      console.log(`[adminOnly] granted — tenant owner`);
-      return handler(ctx);
-    }
+    // Use == not === — DB may return string, ctx returns number
+    if (ownerTelegramId == userId) return handler(ctx);
 
-    // Sub-admins added via /addadmin
+    // Check sub-admins
     const adminRes = await db.query(
       'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
       [userId, tenantId]
     );
 
-    if (!adminRes.rows.length) {
-      console.log(`[adminOnly] denied — not admin`);
-      return ctx.reply('⛔ Admin access only.');
-    }
-
-    console.log(`[adminOnly] granted — sub admin`);
+    if (!adminRes.rows.length) return ctx.reply('⛔ Admin access only.');
     return handler(ctx);
   };
-
 }
 
 module.exports = { register };

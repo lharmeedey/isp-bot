@@ -1,5 +1,7 @@
-const db = require('../services/db');
-const { naira } = require('../services/helpers');
+const db            = require('../services/db');
+const logger        = require('../services/logger');
+const { naira }     = require('../services/helpers');
+const { encrypt }   = require('../services/encryption');
 const tenantManager = require('../services/tenantManager');
 
 const awaitingTenant = new Map();
@@ -18,23 +20,36 @@ async function listTenants(ctx) {
   if (!res.rows.length) return ctx.reply('No tenants yet.');
 
   const lines = res.rows.map(t =>
-    `• *${t.name}* — \`${t.tenant_id}\` — ${t.active ? '🟢 active' : '🔴 inactive'}`
+    `• *${t.name}* — \`${t.tenant_id}\` — ${t.active ? '🟢 active' : '🔴 inactive'} — Owner: \`${t.telegram_id || 'not set'}\``
   ).join('\n');
 
   return ctx.replyWithMarkdown(`🏢 *All Tenants*\n\n${lines}`);
 }
 
 async function totalRevenue(ctx) {
-  const res = await db.query(
-    'SELECT tenant_id, COALESCE(SUM(amount),0) as total FROM purchases GROUP BY tenant_id'
-  );
+  const res = await db.query(`
+    SELECT t.name, t.tenant_id, COALESCE(SUM(p.amount),0) as total
+    FROM tenants t
+    LEFT JOIN purchases p ON p.tenant_id = t.tenant_id
+    GROUP BY t.tenant_id, t.name
+    ORDER BY total DESC
+  `);
+
   if (!res.rows.length) return ctx.reply('No revenue yet.');
 
   const lines = res.rows.map(r =>
-    `• \`${r.tenant_id}\`: ${naira(r.total)}`
+    `• *${r.name}*: ${naira(r.total)}`
   ).join('\n');
 
-  return ctx.replyWithMarkdown(`💰 *Revenue Across All Tenants*\n\n${lines}`);
+  const grandTotal = res.rows.reduce((sum, r) => sum + parseFloat(r.total), 0);
+
+  return ctx.replyWithMarkdown(
+`💰 *Revenue Across All Tenants*
+
+${lines}
+
+*Grand Total: ${naira(grandTotal)}*`
+  );
 }
 
 async function deactivateTenant(ctx) {
@@ -42,7 +57,7 @@ async function deactivateTenant(ctx) {
   if (!res.rows.length) return ctx.reply('No active tenants.');
 
   const keyboard = res.rows.map(t => ([{
-    text: `${t.name} (${t.tenant_id})`,
+    text:          `${t.name} (${t.tenant_id})`,
     callback_data: `deactivate_${t.tenant_id}`,
   }]));
 
@@ -56,6 +71,7 @@ async function handleDeactivateCallback(ctx) {
   const tenantId = ctx.callbackQuery.data.replace('deactivate_', '');
   await db.query('UPDATE tenants SET active=false WHERE tenant_id=$1', [tenantId]);
   await tenantManager.stopTenant(tenantId);
+  logger.info('Tenant deactivated', { tenantId, by: ctx.from.id });
   await ctx.editMessageText(`✅ Tenant \`${tenantId}\` deactivated and bot stopped.`);
 }
 
@@ -70,12 +86,16 @@ async function fixWebhooks(ctx) {
 
   for (const tenant of res.rows) {
     try {
-      const { Telegraf } = require('telegraf');
-      const bot = new Telegraf(tenant.bot_token);
+      const { Telegraf }  = require('telegraf');
+      const { decrypt }   = require('../services/encryption');
+      const token         = decrypt(tenant.bot_token);
+      const bot           = new Telegraf(token);
       await bot.telegram.setWebhook(`${webhookUrl}/bot/${tenant.tenant_id}`);
       await ctx.reply(`✅ ${tenant.name}: webhook set`);
+      logger.info('Webhook fixed', { tenantId: tenant.tenant_id });
     } catch (err) {
       await ctx.reply(`❌ ${tenant.name}: ${err.message}`);
+      logger.error('Webhook fix failed', { tenantId: tenant.tenant_id, error: err.message });
     }
   }
 
@@ -95,22 +115,20 @@ async function reloadTenant(ctx) {
     [tenantId]
   );
 
-  if (!res.rows.length) {
-    return ctx.reply(`❌ Tenant not found: ${tenantId}`);
-  }
-
-  const tenant = res.rows[0];
+  if (!res.rows.length) return ctx.reply(`❌ Tenant not found: ${tenantId}`);
 
   await tenantManager.stopTenant(tenantId);
-  await tenantManager.launchTenant(tenant);
+  await tenantManager.launchTenant(res.rows[0]);
+
+  logger.info('Tenant reloaded', { tenantId, by: ctx.from.id });
 
   return ctx.replyWithMarkdown(
 `✅ *Tenant Reloaded!*
 
-Name:      ${tenant.name}
+Name:      ${res.rows[0].name}
 Tenant ID: \`${tenantId}\`
 
-Fresh keys loaded from database.`
+Fresh data loaded from database.`
   );
 }
 
@@ -118,7 +136,7 @@ async function handleSuperAdminText(ctx, next) {
   const userId = ctx.from.id;
   const text   = ctx.message?.text?.trim();
 
-  if (!text) return next();
+  if (!text || text.startsWith('/')) return next();
 
   const state = awaitingTenant.get(userId);
   if (!state) return next();
@@ -151,7 +169,7 @@ async function handleSuperAdminText(ctx, next) {
 
     if (state.step === 'owner_telegram_id') {
       const ownerId = parseInt(text);
-      if (isNaN(ownerId)) return ctx.reply('That doesn\'t look like a valid Telegram ID. Send a number (e.g. 5926845553):');
+      if (isNaN(ownerId)) return ctx.reply('Invalid Telegram ID. Send a number (e.g. 5926845553):');
       state.owner_telegram_id = ownerId;
       state.step              = 'paystack_secret';
       awaitingTenant.set(userId, state);
@@ -176,18 +194,26 @@ async function handleSuperAdminText(ctx, next) {
       const tenantId   = `tenant_${Date.now()}`;
       const webhookUrl = process.env.WEBHOOK_URL || null;
 
-      // Check if bot token already exists
+      // Check for duplicate bot token
       const existing = await db.query(
+        'SELECT tenant_id FROM tenants WHERE bot_token=$1',
+        [encrypt(state.bot_token)]
+      );
+
+      // Also check plain text in case of legacy unencrypted tokens
+      const existingPlain = await db.query(
         'SELECT tenant_id FROM tenants WHERE bot_token=$1',
         [state.bot_token]
       );
-      if (existing.rows.length) {
+
+      if (existing.rows.length || existingPlain.rows.length) {
+        const existingId = existing.rows[0]?.tenant_id || existingPlain.rows[0]?.tenant_id;
         return ctx.reply(
-          `❌ That bot token is already registered under tenant \`${existing.rows[0].tenant_id}\`.\n\nAsk the client to create a new bot via @BotFather.`
+          `❌ That bot token is already registered under tenant \`${existingId}\`.\n\nAsk the client to create a new bot via @BotFather.`
         );
       }
 
-      // Save tenant to database
+      // Encrypt sensitive fields before storing
       await db.query(
         `INSERT INTO tenants
          (tenant_id, name, email, telegram_id, bot_token, paystack_secret, paystack_public, webhook_url)
@@ -197,36 +223,38 @@ async function handleSuperAdminText(ctx, next) {
           state.name,
           state.email,
           state.owner_telegram_id,
-          state.bot_token,
-          state.paystack_secret,
-          state.paystack_public,
+          encrypt(state.bot_token),
+          encrypt(state.paystack_secret),
+          encrypt(state.paystack_public),
           webhookUrl,
         ]
       );
 
-      // Fetch full tenant record
+      // Fetch full record and launch
       const tenantRes = await db.query(
         'SELECT * FROM tenants WHERE tenant_id=$1',
         [tenantId]
       );
-      const tenant = tenantRes.rows[0];
-
-      // Launch the bot immediately
-      await tenantManager.launchTenant(tenant);
+      await tenantManager.launchTenant(tenantRes.rows[0]);
 
       const paystackWebhook = webhookUrl
         ? `${webhookUrl}/pay/${tenantId}`
         : 'Not available locally — set WEBHOOK_URL on Render';
 
-      // Notify tenant owner on Telegram
+      logger.info('Tenant created', {
+        tenantId,
+        name:    state.name,
+        ownerId: state.owner_telegram_id,
+        by:      userId,
+      });
+
+      // Notify tenant owner
       try {
         await ctx.telegram.sendMessage(
           state.owner_telegram_id,
 `🎉 *Your ISP Bot is Live — ${state.name}!*
 
 You have full admin access to your bot.
-
-Use these commands:
 
 👥 *Users*
 /users — View all users
@@ -239,15 +267,21 @@ Use these commands:
 📦 *Stock*
 /stock — Bandwidth usage
 
-
+👮 *Admin Management*
+/addadmin — Add a sub-admin
+/removeadmin — Remove a sub-admin
+/listadmins — View all admins
 
 *Action Required — Paystack Webhook:*
-Go to dashboard.paystack.com → Settings → API Keys & Webhooks and paste this URL:
+Go to dashboard.paystack.com → Settings → API Keys & Webhooks and paste:
 \`${paystackWebhook}\``,
           { parse_mode: 'Markdown' }
         );
       } catch (e) {
-        console.error('Could not notify tenant owner:', e.message);
+        logger.warn('Could not notify tenant owner', {
+          ownerId: state.owner_telegram_id,
+          error:   e.message,
+        });
       }
 
       return ctx.replyWithMarkdown(
@@ -261,13 +295,13 @@ Owner ID:  \`${state.owner_telegram_id}\`
 *Paystack Webhook URL:*
 \`${paystackWebhook}\`
 
-_Tenant has been notified on Telegram._`
+_Keys encrypted and stored. Tenant has been notified._`
       );
     }
 
   } catch (err) {
     awaitingTenant.delete(userId);
-    console.error('Tenant creation error:', err);
+    logger.error('Tenant creation error', { error: err.message, userId });
     return ctx.reply(`❌ Something went wrong: ${err.message}\n\nUse /addtenant to try again.`);
   }
 
@@ -284,22 +318,3 @@ module.exports = {
   fixWebhooks,
   reloadTenant,
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

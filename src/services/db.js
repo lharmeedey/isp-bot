@@ -1,20 +1,55 @@
 const { Pool } = require('pg');
-const { URL } = require('url');
+const logger   = require('./logger');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  connectionString:        process.env.DATABASE_URL,
+  ssl:                     process.env.NODE_ENV === 'production'
+                             ? { rejectUnauthorized: false }
+                             : false,
+  max:                     20,
+  idleTimeoutMillis:       30000,
+  connectionTimeoutMillis: 5000,
 });
 
+pool.on('error', (err) => {
+  logger.error('Unexpected DB pool error', { error: err.message });
+});
 
+pool.on('connect', () => {
+  logger.debug('New DB connection established');
+});
 
+// Wrap query with logging
+async function query(text, params) {
+  const start = Date.now();
+  try {
+    const result = await pool.query(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      logger.warn('Slow query detected', { duration, text: text.slice(0, 100) });
+    }
+    return result;
+  } catch (err) {
+    logger.error('Query error', { error: err.message, text: text.slice(0, 100) });
+    throw err;
+  }
+}
 
-const dbUrl = new URL(process.env.DATABASE_URL);
+// Get a client for transactions
+async function getClient() {
+  const client = await pool.connect();
+  const originalQuery = client.query.bind(client);
+  const start = Date.now();
 
-console.log('DB Host:', dbUrl.hostname);
-console.log('DB Database:', dbUrl.pathname);
+  // Monkey-patch to add timeout warning
+  client.query = (...args) => {
+    if (Date.now() - start > 5000) {
+      logger.warn('Transaction client checked out for too long');
+    }
+    return originalQuery(...args);
+  };
 
+  return client;
+}
 
-module.exports = {
-  query: (text, params) => pool.query(text, params),
-};
+module.exports = { query, getClient };
