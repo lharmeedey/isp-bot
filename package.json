@@ -5,7 +5,9 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
-    "migrate": "node src/services/migrate.js"
+    "migrate": "node src/services/migrate.js",
+    "format": "prettier --write \"src/**/*.js\"",
+    "format:check": "prettier --check \"src/**/*.js\""
   },
   "dependencies": {
     "axios": "^1.6.0",
@@ -15,5 +17,8 @@
     "pg": "^8.11.3",
     "telegraf": "^4.16.3",
     "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
   }
 }

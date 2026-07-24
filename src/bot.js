@@ -77,9 +77,9 @@ masterBot.command('totalrevenue', superAdminOnly(superAdmin.totalRevenue));
 masterBot.command('deactivate',   superAdminOnly(superAdmin.deactivateTenant));
 masterBot.command('reloadtenant', superAdminOnly(superAdmin.reloadTenant));
 masterBot.command('fixwebhooks',  superAdminOnly(superAdmin.fixWebhooks));
-
 masterBot.action(/^deactivate_.+$/, superAdminOnly(superAdmin.handleDeactivateCallback));
-
+masterBot.action(/^provider_.+$/, superAdminOnly(superAdmin.handleProviderCallback));
+masterBot.command('testprovider', superAdminOnly(superAdmin.testProvider));
 masterBot.on('text', (ctx, next) =>
   superAdmin.handleSuperAdminText(ctx, next)
 );
@@ -132,16 +132,85 @@ if (WEBHOOK_URL) {
 
 // ── Cron: low-data alerts every 15 min ────────
 cron.schedule('*/15 * * * *', async () => {
-  logger.debug('Running low-data alert job');
+  logger.debug('Running sync and alert job');
   const bots = tenantManager.getActiveTenants();
+  const { getProvider } = require('./services/providers');
 
   for (const [tenantId, { bot }] of bots) {
     try {
+      // Fetch fresh tenant config
+      const tenantRes   = await db.query(
+        'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
+      );
+      const freshTenant = tenantRes.rows[0];
+      if (!freshTenant) continue;
+
+      // ── Live sync from network provider ──────────
+      if (freshTenant.network_provider !== 'none') {
+        try {
+          const provider = getProvider(freshTenant);
+
+          // Get all active vouchers for this tenant
+          const vouchers = await db.query(
+            `SELECT v.*, u.telegram_id as user_tid
+             FROM vouchers v
+             JOIN users u ON u.telegram_id=v.telegram_id AND u.tenant_id=v.tenant_id
+             WHERE v.tenant_id=$1 AND u.status='active' AND v.omada_voucher_id IS NOT NULL`,
+            [tenantId]
+          );
+
+          for (const voucher of vouchers.rows) {
+            try {
+              const usage = await provider.getUsage(voucher.omada_voucher_id);
+              if (!usage) continue;
+
+              const remaining = usage.remainingGb;
+              const total     = usage.totalGb;
+
+              if (remaining !== null && total !== null) {
+                await db.query(
+                  `UPDATE users SET remaining_gb=$1, total_gb=$2, last_sync=NOW()
+                   WHERE telegram_id=$3 AND tenant_id=$4`,
+                  [remaining, total, voucher.telegram_id, tenantId]
+                );
+              }
+
+              // Mark expired vouchers
+              if (usage.status === 2 || usage.status === 3) {
+                await db.query(
+                  `UPDATE users SET status='inactive' WHERE telegram_id=$1 AND tenant_id=$2`,
+                  [voucher.telegram_id, tenantId]
+                );
+                await db.query(
+                  `UPDATE vouchers SET status='used' WHERE id=$1`,
+                  [voucher.id]
+                );
+              }
+
+            } catch (e) {
+              logger.warn('Voucher sync failed', {
+                voucherId: voucher.omada_voucher_id,
+                error:     e.message,
+              });
+            }
+          }
+
+          logger.debug('Provider sync complete', {
+            tenantId,
+            voucherCount: vouchers.rows.length,
+          });
+
+        } catch (err) {
+          logger.error('Provider sync error', { tenantId, error: err.message });
+        }
+      }
+
+      // ── Low-data alerts ───────────────────────────
       const users = await db.query(
         `SELECT * FROM users
          WHERE tenant_id=$1 AND status='active'
          AND total_gb > 0
-         AND remaining_gb / NULLIF(total_gb,0) < 0.20`,
+         AND remaining_gb / NULLIF(total_gb, 0) < 0.20`,
         [tenantId]
       );
 
@@ -164,11 +233,10 @@ cron.schedule('*/15 * * * *', async () => {
       }
 
     } catch (err) {
-      logger.error('Alert job error', { tenantId, error: err.message });
+      logger.error('Sync job error', { tenantId, error: err.message });
     }
   }
 });
-
 // ── Keep Render awake ──────────────────────────
 if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {
   setInterval(() => {

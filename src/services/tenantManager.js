@@ -5,6 +5,7 @@ const crypto               = require('crypto');
 const logger               = require('./logger');
 const { decrypt }          = require('./encryption');
 const { webhookLimiter }   = require('./rateLimiter');
+const { clearProviderCache } = require('./providers');
 
 const tenantBots = new Map();
 
@@ -94,6 +95,7 @@ async function stopTenant(tenantId) {
   if (!entry) return;
 
   try {
+     clearProviderCache(tenantId);
     if (entry.tenant.webhook_url) {
       await entry.bot.telegram.deleteWebhook().catch(() => {});
     }
@@ -197,7 +199,6 @@ function createWebhookRouter(masterApp) {
   });
 }
 
-// ── Handle confirmed Paystack payment ─────────
 async function handlePayment(bot, tenant, data) {
   const { telegram_id, plan, email } = data.metadata || {};
 
@@ -227,7 +228,48 @@ async function handlePayment(bot, tenant, data) {
   const expiry = new Date();
   expiry.setDate(expiry.getDate() + days);
 
-  // Use DB transaction — all writes succeed or all fail
+  // ── Create voucher via network provider ────────
+  const { getProvider } = require('./providers');
+
+  // Fetch fresh tenant from DB to get latest provider config
+  const freshTenantRes = await db.query(
+    'SELECT * FROM tenants WHERE tenant_id=$1',
+    [tenantId]
+  );
+  const freshTenant = freshTenantRes.rows[0] || tenant;
+  const provider    = getProvider(freshTenant);
+
+  let voucherCode      = null;
+  let omadaVoucherId   = null;
+  let providerError    = null;
+
+  try {
+    const result = await provider.createVoucher({
+      plan,
+      email,
+      reference: data.reference,
+      planConfig: planObj,
+    });
+
+    voucherCode    = result.code;
+    omadaVoucherId = result.omadaVoucherId;
+
+  } catch (err) {
+    providerError = err.message;
+    logger.error('Provider voucher creation failed', {
+      tenantId,
+      provider: freshTenant.network_provider,
+      error:    err.message,
+    });
+
+    // Fall back to generating a random code so customer still gets something
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    voucherCode = Array.from({ length: 8 }, () =>
+      chars[Math.floor(Math.random() * chars.length)]
+    ).join('');
+  }
+
+  // ── DB transaction — all writes succeed or all fail ──
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
@@ -246,38 +288,53 @@ async function handlePayment(bot, tenant, data) {
       [tid, tenantId, email, plan, data.amount / 100, data.reference]
     );
 
-    const code = generateCode();
     await client.query(
-      `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, reference)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [tid, tenantId, email, plan, code, data.reference]
+      `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, omada_voucher_id, reference)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [tid, tenantId, email, plan, voucherCode, omadaVoucherId, data.reference]
     );
 
     await client.query('COMMIT');
 
-    await bot.telegram.sendMessage(
-      tid,
+    // ── Notify user ────────────────────────────────
+    let message =
 `✅ *Payment Confirmed!*
 
 Username: \`${email}\`
-Password: \`${code}\`
+Password: \`${voucherCode}\`
 Plan:     *${plan}*
 Expiry:   ${expiry.toDateString()}
 
-_Your data is now active. Save your password to connect._`,
-      { parse_mode: 'Markdown' }
-    );
+_Connect to the WiFi network and enter your password on the login page._`;
+
+    if (providerError) {
+      message += `\n\n_Note: If this code doesn't work, please contact /support._`;
+    }
+
+    await bot.telegram.sendMessage(tid, message, { parse_mode: 'Markdown' });
 
     logger.info(`Payment processed`, {
       plan,
       email,
       tenantId,
-      reference: data.reference,
-      amount:    data.amount / 100,
+      reference:  data.reference,
+      amount:     data.amount / 100,
+      provider:   freshTenant.network_provider,
+      voucherCode,
     });
 
   } catch (err) {
     await client.query('ROLLBACK');
+
+    // If DB failed but voucher was created on Omada, try to delete it
+    if (omadaVoucherId) {
+      try {
+        await provider.deactivateVoucher(omadaVoucherId);
+      } catch (e) {
+        logger.error('Failed to rollback Omada voucher', { omadaVoucherId });
+      }
+    }
+
     logger.error(`Payment transaction failed`, {
       reference: data.reference,
       error:     err.message,
@@ -286,7 +343,6 @@ _Your data is now active. Save your password to connect._`,
     client.release();
   }
 }
-
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from({ length: 8 }, () =>

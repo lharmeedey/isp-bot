@@ -62,17 +62,62 @@ Let's get you set up.`
     return ctx.reply('Please enter your email address (e.g. you@example.com):');
   });
 
-  // ── /balance ──────────────────────────────────
+ // ── /balance ──────────────────────────────────
   bot.command('balance', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
     if (!user.plan) return ctx.reply('No active plan yet. Use /buy to get started.');
 
-    const remaining = parseFloat(user.remaining_gb);
-    const total     = parseFloat(user.total_gb);
-    const pct       = total > 0 ? Math.round((remaining / total) * 100) : 0;
-    const bar       = usageBar(remaining, total);
-    const warn      = pct < 20 ? '\n\n⚠️ *Low data!* Recharge with /buy.' : '';
+    // Try to get live usage from network provider
+    const { getProvider } = require('../services/providers');
+    const freshTenantRes  = await db.query(
+      'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
+    );
+    const freshTenant = freshTenantRes.rows[0];
+    const provider    = getProvider(freshTenant);
+
+    let remaining = parseFloat(user.remaining_gb);
+    let total     = parseFloat(user.total_gb);
+    let syncNote  = `_Last updated: ${syncAge(user)}_`;
+    let expiry    = user.expiry;
+
+    // Fetch live data if provider is configured
+    if (freshTenant.network_provider !== 'none') {
+      try {
+        // Get user's active voucher
+        const voucherRes = await db.query(
+          `SELECT * FROM vouchers
+           WHERE telegram_id=$1 AND tenant_id=$2
+           ORDER BY created_at DESC LIMIT 1`,
+          [ctx.from.id, tid]
+        );
+
+        if (voucherRes.rows[0]?.omada_voucher_id) {
+          const liveUsage = await provider.getUsage(voucherRes.rows[0].omada_voucher_id);
+
+          if (liveUsage) {
+            remaining = liveUsage.remainingGb ?? remaining;
+            total     = liveUsage.totalGb     ?? total;
+            expiry    = liveUsage.expiry       ?? expiry;
+            syncNote  = `_Live data from network ✓_`;
+
+            // Update DB with fresh values
+            await db.query(
+              `UPDATE users SET remaining_gb=$1, total_gb=$2, last_sync=NOW()
+               WHERE telegram_id=$3 AND tenant_id=$4`,
+              [remaining, total, ctx.from.id, tid]
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn('Live balance fetch failed, using cached', { error: err.message });
+        syncNote = `_Cached data — ${syncAge(user)}_`;
+      }
+    }
+
+    const pct  = total > 0 ? Math.round((remaining / total) * 100) : 0;
+    const bar  = usageBar(remaining, total);
+    const warn = pct < 20 ? '\n\n⚠️ *Low data!* Recharge with /buy.' : '';
 
     return ctx.replyWithMarkdown(
 `📊 *Your Data Balance*
@@ -80,10 +125,10 @@ Let's get you set up.`
 Plan:      *${user.plan}*
 Remaining: *${gb(remaining)}*
 Used:      ${gb(total - remaining)} of ${gb(total)}
-Expiry:    ${date(user.expiry)}
+Expiry:    ${date(expiry)}
 
 ${bar}  ${pct}%
-_Last updated: ${syncAge(user)}_${warn}`
+${syncNote}${warn}`
     );
   });
 
@@ -460,13 +505,48 @@ Remaining: *${gb(total - sold)}*`
     );
   }));
 
-  bot.command('online', adminOnly(tid, async (ctx) => {
+bot.command('online', adminOnly(tid, async (ctx) => {
+    const { getProvider } = require('../services/providers');
+    const freshTenantRes  = await db.query(
+      'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
+    );
+    const freshTenant = freshTenantRes.rows[0];
+
+    // DB counts
     const res = await db.query(
       'SELECT status, COUNT(*) as count FROM users WHERE tenant_id=$1 GROUP BY status',
       [tid]
     );
     const map = {};
     res.rows.forEach(r => { map[r.status] = r.count; });
+
+    // Try live data from provider
+    if (freshTenant.network_provider !== 'none') {
+      try {
+        const provider = getProvider(freshTenant);
+        const live     = await provider.getOnlineClients();
+
+        const clientLines = live.clients.slice(0, 10).map(c =>
+          `• ${c.name || c.mac} — ${c.ip || '—'}`
+        ).join('\n');
+
+        return ctx.replyWithMarkdown(
+`🟢 *Live Network Status*
+
+Online Now:  *${live.online}*
+DB Active:   *${map['active'] || 0}*
+DB Inactive: *${map['inactive'] || 0}*
+
+${live.clients.length > 0 ? `*Connected Clients:*\n${clientLines}` : '_No clients connected_'}
+${live.clients.length > 10 ? `\n_...and ${live.clients.length - 10} more_` : ''}`
+        );
+
+      } catch (err) {
+        logger.warn('Live online fetch failed', { error: err.message });
+      }
+    }
+
+    // Fallback to DB data
     return ctx.replyWithMarkdown(
 `🟢 *User Status*
 

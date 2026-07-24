@@ -4,17 +4,25 @@ const db = require('./db');
 async function migrate() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS tenants (
-      id               SERIAL PRIMARY KEY,
-      tenant_id        VARCHAR(50) UNIQUE NOT NULL,
-      name             VARCHAR(100),
-      email            VARCHAR(255),
-      telegram_id      BIGINT,
-      bot_token        VARCHAR(200) UNIQUE,
-      paystack_secret  VARCHAR(200),
-      paystack_public  VARCHAR(200),
-      webhook_url      VARCHAR(200),
-      active           BOOLEAN DEFAULT true,
-      created_at       TIMESTAMP DEFAULT NOW()
+      id                  SERIAL PRIMARY KEY,
+      tenant_id           VARCHAR(50) UNIQUE NOT NULL,
+      name                VARCHAR(100),
+      email               VARCHAR(255),
+      telegram_id         BIGINT,
+      bot_token           VARCHAR(200) UNIQUE,
+      paystack_secret     VARCHAR(200),
+      paystack_public     VARCHAR(200),
+      webhook_url         VARCHAR(200),
+      network_provider    VARCHAR(20) DEFAULT 'none',
+      omada_url           VARCHAR(200),
+      omada_site_id       VARCHAR(100),
+      omada_client_id     VARCHAR(200),
+      omada_client_secret VARCHAR(200),
+      mikrotik_url        VARCHAR(200),
+      mikrotik_username   VARCHAR(200),
+      mikrotik_password   VARCHAR(200),
+      active              BOOLEAN DEFAULT true,
+      created_at          TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -44,14 +52,17 @@ async function migrate() {
     );
 
     CREATE TABLE IF NOT EXISTS vouchers (
-      id          SERIAL PRIMARY KEY,
-      telegram_id BIGINT,
-      tenant_id   VARCHAR(50),
-      email       VARCHAR(255),
-      plan        VARCHAR(50),
-      code        VARCHAR(20) UNIQUE,
-      reference   VARCHAR(100),
-      created_at  TIMESTAMP DEFAULT NOW()
+      id               SERIAL PRIMARY KEY,
+      telegram_id      BIGINT,
+      tenant_id        VARCHAR(50),
+      email            VARCHAR(255),
+      plan             VARCHAR(50),
+      code             VARCHAR(50) UNIQUE,
+      omada_voucher_id VARCHAR(100),
+      reference        VARCHAR(100),
+      status           VARCHAR(20) DEFAULT 'unused',
+      created_at       TIMESTAMP DEFAULT NOW(),
+      used_at          TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS admins (
@@ -76,89 +87,45 @@ async function migrate() {
     );
   `);
 
-  console.log('✅ Tables created/verified successfully');
+  console.log('✅ Tables created/verified');
 
-  // ── Drop old incompatible tables and recreate ──
-  // Only runs if old single-tenant schema exists
-  const oldUsers = await db.query(`
-    SELECT column_name FROM information_schema.columns
-    WHERE table_name='users' AND column_name='tenant_id'
-  `);
+  // ── Add new columns to existing tenants table if missing ──
+  const columns = [
+    { name: 'network_provider',    def: "VARCHAR(20) DEFAULT 'none'" },
+    { name: 'omada_url',           def: 'VARCHAR(200)' },
+    { name: 'omada_site_id',       def: 'VARCHAR(100)' },
+    { name: 'omada_client_id',     def: 'VARCHAR(200)' },
+    { name: 'omada_client_secret', def: 'VARCHAR(200)' },
+    { name: 'mikrotik_url',        def: 'VARCHAR(200)' },
+    { name: 'mikrotik_username',   def: 'VARCHAR(200)' },
+    { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
+  ];
 
-  if (!oldUsers.rows.length) {
-    console.log('⚠️  Old schema detected — rebuilding tables with tenant_id...');
+  for (const col of columns) {
+    const exists = await db.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='tenants' AND column_name=$1
+    `, [col.name]);
 
-    await db.query(`
-      DROP TABLE IF EXISTS vouchers CASCADE;
-      DROP TABLE IF EXISTS purchases CASCADE;
-      DROP TABLE IF EXISTS admins CASCADE;
-      DROP TABLE IF EXISTS users CASCADE;
-      DROP TABLE IF EXISTS sessions CASCADE;
-
-      CREATE TABLE users (
-        telegram_id  BIGINT NOT NULL,
-        tenant_id    VARCHAR(50) NOT NULL,
-        email        VARCHAR(255),
-        name         VARCHAR(100),
-        plan         VARCHAR(50),
-        remaining_gb NUMERIC(8,3) DEFAULT 0,
-        total_gb     NUMERIC(8,3) DEFAULT 0,
-        expiry       DATE,
-        status       VARCHAR(20) DEFAULT 'inactive',
-        last_sync    TIMESTAMP DEFAULT NOW(),
-        PRIMARY KEY (telegram_id, tenant_id)
-      );
-
-      CREATE TABLE purchases (
-        id          SERIAL PRIMARY KEY,
-        telegram_id BIGINT,
-        tenant_id   VARCHAR(50),
-        email       VARCHAR(255),
-        plan        VARCHAR(50),
-        amount      NUMERIC(10,2),
-        reference   VARCHAR(100) UNIQUE,
-        date        TIMESTAMP DEFAULT NOW(),
-        status      VARCHAR(20) DEFAULT 'success'
-      );
-
-      CREATE TABLE vouchers (
-        id          SERIAL PRIMARY KEY,
-        telegram_id BIGINT,
-        tenant_id   VARCHAR(50),
-        email       VARCHAR(255),
-        plan        VARCHAR(50),
-        code        VARCHAR(20) UNIQUE,
-        reference   VARCHAR(100),
-        created_at  TIMESTAMP DEFAULT NOW()
-      );
-
-      CREATE TABLE admins (
-        id          SERIAL PRIMARY KEY,
-        telegram_id BIGINT NOT NULL,
-        tenant_id   VARCHAR(50) NOT NULL,
-        name        VARCHAR(100),
-        email       VARCHAR(255),
-        role        VARCHAR(20) DEFAULT 'admin',
-        added_by    BIGINT,
-        active      BOOLEAN DEFAULT true,
-        created_at  TIMESTAMP DEFAULT NOW(),
-        UNIQUE (telegram_id, tenant_id)
-      );
-
-      CREATE TABLE sessions (
-        telegram_id BIGINT NOT NULL,
-        tenant_id   VARCHAR(50) NOT NULL,
-        data        TEXT,
-        updated_at  TIMESTAMP DEFAULT NOW(),
-        PRIMARY KEY (telegram_id, tenant_id)
-      );
-    `);
-
-    console.log('✅ Tables rebuilt with multi-tenant schema');
-  } else {
-    console.log('✅ Schema already up to date');
+    if (!exists.rows.length) {
+      await db.query(`ALTER TABLE tenants ADD COLUMN ${col.name} ${col.def}`);
+      console.log(`✅ Added column: ${col.name}`);
+    }
   }
 
+  // Add omada_voucher_id to vouchers if missing
+  const voucherCol = await db.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name='vouchers' AND column_name='omada_voucher_id'
+  `);
+  if (!voucherCol.rows.length) {
+    await db.query(`ALTER TABLE vouchers ADD COLUMN omada_voucher_id VARCHAR(100)`);
+    await db.query(`ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'unused'`);
+    await db.query(`ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_at TIMESTAMP`);
+    console.log('✅ Added omada columns to vouchers');
+  }
+
+  console.log('✅ Migration complete');
   process.exit(0);
 }
 
