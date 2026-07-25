@@ -93,6 +93,7 @@ async function migrate() {
   const columns = [
     { name: 'network_provider',    def: "VARCHAR(20) DEFAULT 'none'" },
     { name: 'omada_url',           def: 'VARCHAR(200)' },
+    { name: 'omada_controller_id', def: 'VARCHAR(100)' },
     { name: 'omada_site_id',       def: 'VARCHAR(100)' },
     { name: 'omada_client_id',     def: 'VARCHAR(200)' },
     { name: 'omada_client_secret', def: 'VARCHAR(200)' },

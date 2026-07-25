@@ -134,9 +134,9 @@ Fresh data loaded from database.`
 
 async function handleProviderCallback(ctx) {
   await ctx.answerCbQuery();
-  const userId   = ctx.from.id;
-  const choice   = ctx.callbackQuery.data.replace('provider_', '');
-  const state    = awaitingTenant.get(userId);
+  const userId = ctx.from.id;
+  const choice = ctx.callbackQuery.data.replace('provider_', '');
+  const state = awaitingTenant.get(userId);
 
   if (!state || state.step !== 'network_provider') {
     return ctx.editMessageText('Session expired. Use /addtenant to start again.');
@@ -155,7 +155,7 @@ async function handleProviderCallback(ctx) {
     state.step = 'omada_url';
     awaitingTenant.set(userId, state);
     return ctx.editMessageText(
-`Step 8/9 — Omada Controller URL
+      `Step 8/9 — Omada Controller URL
 
 Enter the URL of your Omada Software Controller:
 Example: https://your-vps-ip:8043`
@@ -166,7 +166,7 @@ Example: https://your-vps-ip:8043`
     state.step = 'mikrotik_url';
     awaitingTenant.set(userId, state);
     return ctx.editMessageText(
-`Step 8/9 — MikroTik Router URL
+      `Step 8/9 — MikroTik Router URL
 
 Enter the MikroTik REST API base URL:
 Example: https://192.168.1.1/rest`
@@ -175,7 +175,7 @@ Example: https://192.168.1.1/rest`
 }
 
 async function finalizeTenant(ctx, state, userId) {
-  const tenantId   = `tenant_${Date.now()}`;
+  const tenantId = `tenant_${Date.now()}`;
   const webhookUrl = process.env.WEBHOOK_URL || null;
 
   // Check for duplicate bot token
@@ -197,14 +197,15 @@ async function finalizeTenant(ctx, state, userId) {
   }
 
   // Encrypt and save
-  await db.query(
+await db.query(
     `INSERT INTO tenants
      (tenant_id, name, email, telegram_id, bot_token,
       paystack_secret, paystack_public, webhook_url,
       network_provider,
-      omada_url, omada_site_id, omada_client_id, omada_client_secret,
+      omada_url, omada_controller_id, omada_site_id, omada_client_id, omada_client_secret,
+      omada_controller_type, omada_cloud_cert, omada_cloud_key,
       mikrotik_url, mikrotik_username, mikrotik_password)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
     [
       tenantId,
       state.name,
@@ -214,17 +215,20 @@ async function finalizeTenant(ctx, state, userId) {
       encrypt(state.paystack_secret),
       encrypt(state.paystack_public),
       webhookUrl,
-      state.network_provider || 'none',
-      state.omada_url        || null,
-      state.omada_site_id    || null,
-      state.omada_client_id  ? encrypt(state.omada_client_id)     : null,
-      state.omada_client_secret ? encrypt(state.omada_client_secret) : null,
-      state.mikrotik_url     || null,
-      state.mikrotik_username ? encrypt(state.mikrotik_username)   : null,
-      state.mikrotik_password ? encrypt(state.mikrotik_password)   : null,
+      state.network_provider            || 'none',
+      state.omada_url                   || null,
+      state.omada_controller_id         || null,
+      state.omada_site_id               || null,
+      state.omada_client_id             ? encrypt(state.omada_client_id)     : null,
+      state.omada_client_secret         ? encrypt(state.omada_client_secret) : null,
+      state.omada_controller_type       || 'software',
+      state.omada_cloud_cert            || null,
+      state.omada_cloud_key             || null,
+      state.mikrotik_url                || null,
+      state.mikrotik_username           ? encrypt(state.mikrotik_username)   : null,
+      state.mikrotik_password           ? encrypt(state.mikrotik_password)   : null,
     ]
   );
-
   const tenantRes = await db.query(
     'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
   );
@@ -240,7 +244,7 @@ async function finalizeTenant(ctx, state, userId) {
     try {
       const { getProvider } = require('../services/providers');
       const provider = getProvider(tenantRes.rows[0]);
-      const test     = await provider.testConnection();
+      const test = await provider.testConnection();
       providerStatus = test.success
         ? `\n✅ ${state.network_provider} connection verified`
         : `\n⚠️ ${state.network_provider} connection failed: ${test.message}`;
@@ -251,17 +255,17 @@ async function finalizeTenant(ctx, state, userId) {
 
   logger.info('Tenant created', {
     tenantId,
-    name:     state.name,
+    name: state.name,
     provider: state.network_provider,
-    ownerId:  state.owner_telegram_id,
-    by:       userId,
+    ownerId: state.owner_telegram_id,
+    by: userId,
   });
 
   // Notify tenant owner
   try {
     await ctx.telegram.sendMessage(
       state.owner_telegram_id,
-`🎉 *Your ISP Bot is Live — ${state.name}!*
+      `🎉 *Your ISP Bot is Live — ${state.name}!*
 
 You have full admin access to your bot.
 
@@ -292,7 +296,7 @@ Go to dashboard.paystack.com → Settings → API Keys & Webhooks and paste:
   awaitingTenant.delete(userId);
 
   return ctx.replyWithMarkdown(
-`✅ *Tenant Created & Bot Launched!*
+    `✅ *Tenant Created & Bot Launched!*
 
 Name:      ${state.name}
 Email:     ${state.email}
@@ -358,21 +362,21 @@ async function handleSuperAdminText(ctx, next) {
       return ctx.reply('Step 6/6 — Enter their Paystack Public Key (pk_test_... or pk_live_...):');
     }
 
-if (state.step === 'paystack_public') {
+    if (state.step === 'paystack_public') {
       if (!text.startsWith('pk_')) return ctx.reply('Invalid Paystack public key. Must start with pk_test_ or pk_live_. Try again:');
       state.paystack_public = text;
-      state.step            = 'network_provider';
+      state.step = 'network_provider';
       awaitingTenant.set(userId, state);
       return ctx.replyWithMarkdown(
-`Step 7/9 — *Network Provider*
+        `Step 7/9 — *Network Provider*
 
 Which network provider does this tenant use?`,
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '📡 Omada Controller',  callback_data: 'provider_omada'    }],
-              [{ text: '🔧 MikroTik Router',   callback_data: 'provider_mikrotik' }],
-              [{ text: '⏭ None (Skip)',         callback_data: 'provider_none'     }],
+              [{ text: '📡 Omada Controller', callback_data: 'provider_omada' }],
+              [{ text: '🔧 MikroTik Router', callback_data: 'provider_mikrotik' }],
+              [{ text: '⏭ None (Skip)', callback_data: 'provider_none' }],
             ],
           },
         }
@@ -386,62 +390,83 @@ Which network provider does this tenant use?`,
   }
 
   // ── Omada steps ──────────────────────────────
-    if (state.step === 'omada_url') {
-      if (!text.startsWith('http')) return ctx.reply('Must be a valid URL starting with http:// or https://. Try again:');
-      state.omada_url = text.replace(/\/$/, '');
-      state.step      = 'omada_site_id';
-      awaitingTenant.set(userId, state);
-      return ctx.reply('Step 8b — Enter the Omada Site ID:');
-    }
+  if (state.step === 'omada_url') {
+    if (!text.startsWith('http')) return ctx.reply('Must be a valid URL starting with http:// or https://. Try again:');
+    state.omada_url = text.replace(/\/$/, '');
+    state.step = 'omada_controller_id';
+    awaitingTenant.set(userId, state);
+    return ctx.reply(
+      `Step 8b — Enter the Omada Controller ID (omadacId)
 
-    if (state.step === 'omada_site_id') {
-      state.omada_site_id = text;
-      state.step          = 'omada_client_id';
-      awaitingTenant.set(userId, state);
-      return ctx.reply('Step 8c — Enter the Omada API Client ID:');
-    }
+This is found by opening:
+${state.omada_url}/api/info
 
-    if (state.step === 'omada_client_id') {
-      state.omada_client_id = text;
-      state.step            = 'omada_client_secret';
-      awaitingTenant.set(userId, state);
-      return ctx.reply('Step 9/9 — Enter the Omada API Client Secret:');
-    }
+Look for the "omadacId" field in the response.
+Example: ae3846afd47b384710ca7c9cf4ef8011`
+    );
+  }
 
-    if (state.step === 'omada_client_secret') {
-      state.omada_client_secret = text;
-      awaitingTenant.delete(userId);
-      await ctx.reply('⏳ Creating tenant and launching bot...');
-      return finalizeTenant(ctx, state, userId);
-    }
+  if (state.step === 'omada_controller_id') {
+    if (text.length < 10) return ctx.reply('That doesn\'t look like a valid controller ID. Try again:');
+    state.omada_controller_id = text;
+    state.step = 'omada_site_id';
+    awaitingTenant.set(userId, state);
+    return ctx.reply(
+      `Step 8c — Enter the Omada Site ID
 
-    // ── MikroTik steps ────────────────────────────
-    if (state.step === 'mikrotik_url') {
-      if (!text.startsWith('http')) return ctx.reply('Must be a valid URL. Try again:');
-      state.mikrotik_url = text.replace(/\/$/, '');
-      state.step         = 'mikrotik_username';
-      awaitingTenant.set(userId, state);
-      return ctx.reply('Step 8b — Enter the MikroTik admin username:');
-    }
+Open your Omada controller, go to your site, and copy the Site ID from the browser URL.
+Example: 6a6393445c7bdd073c22a2ac`
+    );
+  }
 
-    if (state.step === 'mikrotik_username') {
-      state.mikrotik_username = text;
-      state.step              = 'mikrotik_password';
-      awaitingTenant.set(userId, state);
-      return ctx.reply('Step 9/9 — Enter the MikroTik admin password:');
-    }
+  if (state.step === 'omada_site_id') {
+    state.omada_site_id = text;
+    state.step = 'omada_client_id';
+    awaitingTenant.set(userId, state);
+    return ctx.reply('Step 8c — Enter the Omada API Client ID:');
+  }
 
-    if (state.step === 'mikrotik_password') {
-      state.mikrotik_password = text;
-      awaitingTenant.delete(userId);
-      await ctx.reply('⏳ Creating tenant and launching bot...');
-      return finalizeTenant(ctx, state, userId);
-    }
+  if (state.step === 'omada_client_id') {
+    state.omada_client_id = text;
+    state.step = 'omada_client_secret';
+    awaitingTenant.set(userId, state);
+    return ctx.reply('Step 9/9 — Enter the Omada API Client Secret:');
+  }
+
+  if (state.step === 'omada_client_secret') {
+    state.omada_client_secret = text;
+    awaitingTenant.delete(userId);
+    await ctx.reply('⏳ Creating tenant and launching bot...');
+    return finalizeTenant(ctx, state, userId);
+  }
+
+  // ── MikroTik steps ────────────────────────────
+  if (state.step === 'mikrotik_url') {
+    if (!text.startsWith('http')) return ctx.reply('Must be a valid URL. Try again:');
+    state.mikrotik_url = text.replace(/\/$/, '');
+    state.step = 'mikrotik_username';
+    awaitingTenant.set(userId, state);
+    return ctx.reply('Step 8b — Enter the MikroTik admin username:');
+  }
+
+  if (state.step === 'mikrotik_username') {
+    state.mikrotik_username = text;
+    state.step = 'mikrotik_password';
+    awaitingTenant.set(userId, state);
+    return ctx.reply('Step 9/9 — Enter the MikroTik admin password:');
+  }
+
+  if (state.step === 'mikrotik_password') {
+    state.mikrotik_password = text;
+    awaitingTenant.delete(userId);
+    await ctx.reply('⏳ Creating tenant and launching bot...');
+    return finalizeTenant(ctx, state, userId);
+  }
 
   return next();
 }
 async function testProvider(ctx) {
-  const parts    = ctx.message.text.split(' ');
+  const parts = ctx.message.text.split(' ');
   const tenantId = parts[1];
 
   if (!tenantId) {
@@ -465,11 +490,11 @@ async function testProvider(ctx) {
     const { getProvider, clearProviderCache } = require('../services/providers');
     clearProviderCache(tenantId);
     const provider = getProvider(tenant);
-    const result   = await provider.testConnection();
+    const result = await provider.testConnection();
 
     if (result.success) {
       return ctx.replyWithMarkdown(
-`✅ *Connection Successful*
+        `✅ *Connection Successful*
 
 Tenant:   ${tenant.name}
 Provider: ${tenant.network_provider}
@@ -477,7 +502,7 @@ Message:  ${result.message}`
       );
     } else {
       return ctx.replyWithMarkdown(
-`❌ *Connection Failed*
+        `❌ *Connection Failed*
 
 Tenant:   ${tenant.name}
 Provider: ${tenant.network_provider}

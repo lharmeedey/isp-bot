@@ -16,10 +16,13 @@ function getProvider(tenant) {
   }
 
   // Decrypt sensitive fields
-  const decryptedTenant = {
+const decryptedTenant = {
     ...tenant,
     omada_client_id:     decrypt(tenant.omada_client_id),
     omada_client_secret: decrypt(tenant.omada_client_secret),
+    omada_controller_id: tenant.omada_controller_id || null,
+    omada_cloud_cert:    tenant.omada_cloud_cert    || null,
+    omada_cloud_key:     tenant.omada_cloud_key     || null,
     mikrotik_username:   decrypt(tenant.mikrotik_username),
     mikrotik_password:   decrypt(tenant.mikrotik_password),
   };

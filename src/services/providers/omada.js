@@ -1,31 +1,40 @@
 const axios  = require('axios');
-const crypto = require('crypto');
 const https  = require('https');
 const logger = require('../logger');
 
-// Omada Software Controller v5.13+ API
-// Docs: https://your-controller:8043/doc/index
-
 class OmadaProvider {
   constructor(tenant) {
-    this.tenant      = tenant;
-    this.baseUrl     = tenant.omada_url?.replace(/\/$/, ''); // e.g. https://your-vps-ip:8043
-    this.siteId      = tenant.omada_site_id;
-    this.clientId    = tenant.omada_client_id;
-    this.clientSecret = tenant.omada_client_secret;
+    this.tenant         = tenant;
+    this.baseUrl        = tenant.omada_url?.replace(/\/$/, '');
+    this.omadacId       = tenant.omada_controller_id || tenant.omada_site_id?.slice(0, 32);
+    this.siteId         = tenant.omada_site_id;
+    this.clientId       = tenant.omada_client_id;
+    this.clientSecret   = tenant.omada_client_secret;
+    this.controllerType = tenant.omada_controller_type || 'software';
 
-    // Token cache per instance
-    this._accessToken  = null;
-    this._tokenExpiry  = null;
-    this._omadacId     = null; // Controller ID — fetched once on first call
-
-    // Allow self-signed certificates on private controllers
-    this._httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    this._accessToken = null;
+    this._tokenExpiry = null;
+    this._httpsAgent  = this._buildHttpsAgent(tenant);
   }
 
-  // ── Internal: get controller ID ───────────────
+  _buildHttpsAgent(tenant) {
+    if (this.controllerType === 'cloud' && tenant.omada_cloud_cert && tenant.omada_cloud_key) {
+      try {
+        return new https.Agent({
+          cert:               tenant.omada_cloud_cert,
+          key:                tenant.omada_cloud_key,
+          rejectUnauthorized: true,
+        });
+      } catch (err) {
+        logger.error('Failed to build mTLS agent', { error: err.message });
+      }
+    }
+    return new https.Agent({ rejectUnauthorized: false });
+  }
+
+  // ── Get omadacId from controller ───────────────
   async _getOmadacId() {
-    if (this._omadacId) return this._omadacId;
+    if (this.omadacId) return this.omadacId;
 
     const res = await axios.get(`${this.baseUrl}/api/info`, {
       httpsAgent: this._httpsAgent,
@@ -36,18 +45,12 @@ class OmadaProvider {
       throw new Error(`Failed to get controller info: ${res.data?.msg}`);
     }
 
-    this._omadacId = res.data.result.omadacId;
-    logger.debug('Omada controller ID fetched', {
-      omadacId: this._omadacId,
-      tenantId: this.tenant.tenant_id,
-    });
-
-    return this._omadacId;
+    this.omadacId = res.data.result.omadacId;
+    return this.omadacId;
   }
 
-  // ── Internal: get access token ─────────────────
+  // ── Get access token ───────────────────────────
   async _getToken() {
-    // Return cached token if still valid (with 60s buffer)
     if (this._accessToken && this._tokenExpiry && Date.now() < this._tokenExpiry - 60000) {
       return this._accessToken;
     }
@@ -55,16 +58,16 @@ class OmadaProvider {
     const omadacId = await this._getOmadacId();
 
     const res = await axios.post(
-      `${this.baseUrl}/${omadacId}/api/v2/hotspot/token`,
+      `${this.baseUrl}/openapi/authorize/token?grant_type=client_credentials`,
       {
+        omadacId,
         client_id:     this.clientId,
         client_secret: this.clientSecret,
-        grant_type:    'client_credentials',
       },
       {
-        httpsAgent:   this._httpsAgent,
-        timeout:      10000,
-        headers:      { 'Content-Type': 'application/json' },
+        httpsAgent: this._httpsAgent,
+        timeout:    10000,
+        headers:    { 'Content-Type': 'application/json' },
       }
     );
 
@@ -75,15 +78,19 @@ class OmadaProvider {
     this._accessToken = res.data.result.accessToken;
     this._tokenExpiry = Date.now() + (res.data.result.expiresIn * 1000);
 
-    logger.info('Omada token refreshed', { tenantId: this.tenant.tenant_id });
+    logger.info('Omada token refreshed', {
+      tenantId:       this.tenant.tenant_id,
+      controllerType: this.controllerType,
+    });
+
     return this._accessToken;
   }
 
-  // ── Internal: make authenticated API request ───
+  // ── Make authenticated request ─────────────────
   async _request(method, path, data = null) {
     const token    = await this._getToken();
     const omadacId = await this._getOmadacId();
-    const url      = `${this.baseUrl}/${omadacId}/api/v2/hotspot/sites/${this.siteId}${path}`;
+    const url      = `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}${path}`;
 
     const config = {
       method,
@@ -108,7 +115,6 @@ class OmadaProvider {
       return res.data.result;
 
     } catch (err) {
-      // If token expired, clear cache and retry once
       if (err.response?.status === 401) {
         this._accessToken = null;
         this._tokenExpiry = null;
@@ -118,43 +124,38 @@ class OmadaProvider {
     }
   }
 
-  // ── Create a voucher ───────────────────────────
-  async createVoucher({ plan, email, reference, planConfig }) {
-    // planConfig comes from the PLANS env var matched to this plan label
-    // It should contain: omadaProfileId or the raw voucher settings
+  // ── Get voucher groups ─────────────────────────
+  async getVoucherGroups() {
+    const result = await this._request('GET', '/hotspot/voucher-groups?page=1&pageSize=100');
+    return result?.data || [];
+  }
 
+  // ── Create voucher ─────────────────────────────
+  async createVoucher({ plan, email, reference, planConfig }) {
     logger.info('Creating Omada voucher', {
       tenantId: this.tenant.tenant_id,
       plan,
       email,
     });
 
-    const payload = {
-      // Number of vouchers to generate
-      count: 1,
+    // Get voucher group ID from plan config
+    const voucherGroupId = planConfig?.omadaProfileId;
 
-      // Voucher type: 0 = time-limited, 1 = traffic-limited, 2 = both
-      // We use the profile configured on Omada controller
-      // The profile handles quota and validity
-      code: reference.slice(-8).toUpperCase(), // Use last 8 chars of reference as code hint
-
-      // Note: In Omada v5.13, you create vouchers using a profile ID
-      // The profile defines: data quota, validity, speed limit
-      // Clients redeem the code on the captive portal
-      note: `${email} - ${plan} - ${reference}`,
-    };
-
-    // If tenant has configured Omada profile IDs per plan, use them
-    if (planConfig?.omadaProfileId) {
-      payload.profileId = planConfig.omadaProfileId;
+    if (!voucherGroupId) {
+      throw new Error(`No Omada voucher group ID configured for plan: ${plan}. Check your PLANS env variable.`);
     }
 
-    const result = await this._request('POST', '/hotspot/vouchers', payload);
+    const result = await this._request('POST', '/hotspot/vouchers', {
+      voucherGroupId,
+      amount: 1,
+    });
 
     // Omada returns array of created vouchers
-    const voucher = Array.isArray(result) ? result[0] : result;
+    const vouchers = result?.data || result;
+    const voucher  = Array.isArray(vouchers) ? vouchers[0] : vouchers;
 
     if (!voucher?.code) {
+      logger.error('Omada voucher response', { result: JSON.stringify(result) });
       throw new Error('Omada did not return a voucher code');
     }
 
@@ -167,7 +168,7 @@ class OmadaProvider {
     return {
       code:           voucher.code,
       omadaVoucherId: voucher.id,
-      provider:       'omada',
+      provider:       `omada_${this.controllerType}`,
     };
   }
 
@@ -176,17 +177,22 @@ class OmadaProvider {
     if (!omadaVoucherId) return null;
 
     try {
-      const result = await this._request('GET', `/hotspot/vouchers/${omadaVoucherId}`);
+      const result = await this._request(
+        'GET',
+        `/hotspot/vouchers?page=1&pageSize=1&filters.id=${omadaVoucherId}`
+      );
 
-      if (!result) return null;
+      const vouchers = result?.data || [];
+      const voucher  = vouchers[0];
+      if (!voucher) return null;
 
       return {
-        remainingGb:  result.remainTraffic ? result.remainTraffic / 1024 : null,
-        totalGb:      result.totalTraffic  ? result.totalTraffic  / 1024 : null,
-        usedGb:       result.usedTraffic   ? result.usedTraffic   / 1024 : null,
-        expiry:       result.expireTime    ? new Date(result.expireTime).toISOString().slice(0, 10) : null,
-        status:       result.status,       // 0=unused, 1=in use, 2=expired, 3=used up
-        online:       result.onlineNum > 0,
+        remainingGb: voucher.remainTraffic != null ? voucher.remainTraffic / 1024 : null,
+        totalGb:     voucher.limitedTraffic != null ? voucher.limitedTraffic / 1024 : null,
+        usedGb:      voucher.usedTraffic   != null ? voucher.usedTraffic   / 1024 : null,
+        expiry:      voucher.expireTime    != null ? new Date(voucher.expireTime).toISOString().slice(0, 10) : null,
+        status:      voucher.status,
+        online:      (voucher.onlineCount || 0) > 0,
       };
     } catch (err) {
       logger.warn('Failed to get Omada voucher usage', {
@@ -197,23 +203,20 @@ class OmadaProvider {
     }
   }
 
-  // ── Get all online clients ─────────────────────
+  // ── Get online clients ─────────────────────────
   async getOnlineClients() {
     try {
-      const result = await this._request('GET', '/hotspot/clients?status=online&pageSize=200&page=1');
-
+      const result  = await this._request('GET', '/hotspot/clients?page=1&pageSize=200');
       const clients = result?.data || [];
-      const online  = clients.filter(c => c.status === 'online').length;
 
       return {
-        online,
-        offline: 0, // Omada only returns online clients in this endpoint
+        online:  clients.length,
+        offline: 0,
         clients: clients.map(c => ({
-          name:    c.name || c.mac,
-          mac:     c.mac,
-          ip:      c.ip,
-          online:  true,
-          traffic: c.trafficDown + c.trafficUp,
+          name:   c.name || c.mac,
+          mac:    c.mac,
+          ip:     c.ip,
+          online: true,
         })),
       };
     } catch (err) {
@@ -222,12 +225,14 @@ class OmadaProvider {
     }
   }
 
-  // ── Deactivate a voucher ───────────────────────
+  // ── Deactivate voucher ─────────────────────────
   async deactivateVoucher(omadaVoucherId) {
     if (!omadaVoucherId) return true;
 
     try {
-      await this._request('DELETE', `/hotspot/vouchers/${omadaVoucherId}`);
+      await this._request('DELETE', `/hotspot/vouchers`, {
+        ids: [omadaVoucherId],
+      });
       logger.info('Omada voucher deactivated', { omadaVoucherId });
       return true;
     } catch (err) {
@@ -239,30 +244,27 @@ class OmadaProvider {
     }
   }
 
-  // ── Sync all active voucher usage ─────────────
-  async syncAllVouchers(activeVouchers) {
-    const results = [];
-
-    for (const voucher of activeVouchers) {
-      if (!voucher.omada_voucher_id) continue;
-
-      const usage = await this.getUsage(voucher.omada_voucher_id);
-      if (usage) {
-        results.push({ ...voucher, usage });
-      }
-    }
-
-    return results;
-  }
-
   // ── Test connection ────────────────────────────
   async testConnection() {
     try {
       await this._getOmadacId();
       await this._getToken();
-      return { success: true, message: 'Omada connection successful' };
+
+      // Try fetching voucher groups as final verification
+      const groups = await this.getVoucherGroups();
+
+      return {
+        success:        true,
+        message:        `Omada ${this.controllerType} controller connected. Found ${groups.length} voucher group(s).`,
+        controllerType: this.controllerType,
+        voucherGroups:  groups.map(g => ({ name: g.name, id: g.id, unused: g.unusedCount })),
+      };
     } catch (err) {
-      return { success: false, message: err.message };
+      return {
+        success:        false,
+        message:        err.message,
+        controllerType: this.controllerType,
+      };
     }
   }
 }
