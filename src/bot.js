@@ -80,6 +80,7 @@ masterBot.command('fixwebhooks',  superAdminOnly(superAdmin.fixWebhooks));
 masterBot.action(/^deactivate_.+$/, superAdminOnly(superAdmin.handleDeactivateCallback));
 masterBot.action(/^provider_.+$/, superAdminOnly(superAdmin.handleProviderCallback));
 masterBot.command('testprovider', superAdminOnly(superAdmin.testProvider));
+masterBot.action(/^omadatype_.+$/, superAdminOnly(superAdmin.handleOmadaTypeCallback));
 masterBot.on('text', (ctx, next) =>
   superAdmin.handleSuperAdminText(ctx, next)
 );

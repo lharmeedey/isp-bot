@@ -136,7 +136,7 @@ async function handleProviderCallback(ctx) {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
   const choice = ctx.callbackQuery.data.replace('provider_', '');
-  const state = awaitingTenant.get(userId);
+  const state  = awaitingTenant.get(userId);
 
   if (!state || state.step !== 'network_provider') {
     return ctx.editMessageText('Session expired. Use /addtenant to start again.');
@@ -152,13 +152,19 @@ async function handleProviderCallback(ctx) {
   }
 
   if (choice === 'omada') {
-    state.step = 'omada_url';
+    state.step = 'omada_controller_type';
     awaitingTenant.set(userId, state);
     return ctx.editMessageText(
-      `Step 8/9 — Omada Controller URL
-
-Enter the URL of your Omada Software Controller:
-Example: https://your-vps-ip:8043`
+      'Step 7b — Which type of Omada controller does this tenant use?',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🖥 Software Controller (VPS/PC)', callback_data: 'omadatype_software' }],
+            [{ text: '📦 Hardware Controller (Device)',  callback_data: 'omadatype_hardware' }],
+            [{ text: '☁️ Cloud Controller (TP-Link)',    callback_data: 'omadatype_cloud'    }],
+          ],
+        },
+      }
     );
   }
 
@@ -166,7 +172,7 @@ Example: https://your-vps-ip:8043`
     state.step = 'mikrotik_url';
     awaitingTenant.set(userId, state);
     return ctx.editMessageText(
-      `Step 8/9 — MikroTik Router URL
+`Step 8 — MikroTik Router URL
 
 Enter the MikroTik REST API base URL:
 Example: https://192.168.1.1/rest`
@@ -174,6 +180,44 @@ Example: https://192.168.1.1/rest`
   }
 }
 
+async function handleOmadaTypeCallback(ctx) {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const type   = ctx.callbackQuery.data.replace('omadatype_', '');
+  const state  = awaitingTenant.get(userId);
+
+  if (!state || state.step !== 'omada_controller_type') {
+    return ctx.editMessageText('Session expired. Use /addtenant to start again.');
+  }
+
+  state.omada_controller_type = type;
+  state.step                  = 'omada_url';
+  awaitingTenant.set(userId, state);
+
+  const examples = {
+    software: 'https://your-vps-ip:8043',
+    hardware: 'https://192.168.1.1:8043',
+    cloud:    'https://cloudapi.tplinkomada.com',
+  };
+
+  const notes = {
+    software: 'Your AWS VPS running Omada Software Controller',
+    hardware: 'IP address of your physical Omada Hardware Controller',
+    cloud:    'TP-Link hosted cloud — requires certificates from TP-Link',
+  };
+
+  return ctx.editMessageText(
+`Step 8 — Omada Controller URL
+
+Controller type: *${type}*
+
+Enter the controller URL:
+Example: \`${examples[type]}\`
+
+Note: ${notes[type]}`,
+    { parse_mode: 'Markdown' }
+  );
+}
 async function finalizeTenant(ctx, state, userId) {
   const tenantId = `tenant_${Date.now()}`;
   const webhookUrl = process.env.WEBHOOK_URL || null;
@@ -390,21 +434,91 @@ Which network provider does this tenant use?`,
   }
 
   // ── Omada steps ──────────────────────────────
-  if (state.step === 'omada_url') {
-    if (!text.startsWith('http')) return ctx.reply('Must be a valid URL starting with http:// or https://. Try again:');
-    state.omada_url = text.replace(/\/$/, '');
-    state.step = 'omada_controller_id';
-    awaitingTenant.set(userId, state);
-    return ctx.reply(
-      `Step 8b — Enter the Omada Controller ID (omadacId)
+if (state.step === 'omada_url') {
+      if (!text.startsWith('http')) return ctx.reply('Must be a valid URL starting with http:// or https://. Try again:');
+      state.omada_url = text.replace(/\/$/, '');
+      state.step      = 'omada_controller_id';
+      awaitingTenant.set(userId, state);
+      return ctx.reply(
+`Step 8b — Enter the Omada Controller ID
 
-This is found by opening:
+Open this URL in your browser:
 ${state.omada_url}/api/info
 
-Look for the "omadacId" field in the response.
+Copy the value of "omadacId" from the response.
 Example: ae3846afd47b384710ca7c9cf4ef8011`
-    );
-  }
+      );
+    }
+
+    if (state.step === 'omada_controller_id') {
+      if (text.length < 10) return ctx.reply('That doesn\'t look like a valid controller ID. Try again:');
+      state.omada_controller_id = text;
+      state.step                = 'omada_site_id';
+      awaitingTenant.set(userId, state);
+      return ctx.reply(
+`Step 8c — Enter the Omada Site ID
+
+Go to your Omada controller → click your site → copy the Site ID from the browser URL.
+Example: 6a6393445c7bdd073c22a2ac`
+      );
+    }
+
+    if (state.step === 'omada_site_id') {
+      if (text.length < 10) return ctx.reply('That doesn\'t look like a valid Site ID. Try again:');
+      state.omada_site_id = text;
+      state.step          = 'omada_client_id';
+      awaitingTenant.set(userId, state);
+      return ctx.reply('Step 8d — Enter the Omada API Client ID:');
+    }
+
+    if (state.step === 'omada_client_id') {
+      state.omada_client_id = text;
+      state.step            = 'omada_client_secret';
+      awaitingTenant.set(userId, state);
+      return ctx.reply('Step 9 — Enter the Omada API Client Secret:');
+    }
+
+    if (state.step === 'omada_client_secret') {
+      state.omada_client_secret = text;
+
+      if (state.omada_controller_type === 'cloud') {
+        state.step = 'omada_cloud_cert';
+        awaitingTenant.set(userId, state);
+        return ctx.reply(
+`Cloud controller requires certificates from TP-Link.
+
+Paste the full contents of your client.crt file
+(including -----BEGIN CERTIFICATE----- and -----END CERTIFICATE-----)`
+        );
+      }
+
+      awaitingTenant.delete(userId);
+      await ctx.reply('⏳ Creating tenant and launching bot...');
+      return finalizeTenant(ctx, state, userId);
+    }
+
+    if (state.step === 'omada_cloud_cert') {
+      if (!text.includes('BEGIN CERTIFICATE')) {
+        return ctx.reply('Invalid certificate. Must include -----BEGIN CERTIFICATE-----. Try again:');
+      }
+      state.omada_cloud_cert = text;
+      state.step             = 'omada_cloud_key';
+      awaitingTenant.set(userId, state);
+      return ctx.reply(
+`Good. Now paste the full contents of your client.key file
+(including -----BEGIN RSA PRIVATE KEY----- and -----END RSA PRIVATE KEY-----)`
+      );
+    }
+
+    if (state.step === 'omada_cloud_key') {
+      if (!text.includes('BEGIN') || !text.includes('KEY')) {
+        return ctx.reply('Invalid private key. Try again:');
+      }
+      state.omada_cloud_key = text;
+      awaitingTenant.delete(userId);
+      await ctx.reply('⏳ Creating tenant and launching bot...');
+      return finalizeTenant(ctx, state, userId);
+    }
 
   if (state.step === 'omada_controller_id') {
     if (text.length < 10) return ctx.reply('That doesn\'t look like a valid controller ID. Try again:');
@@ -521,9 +635,9 @@ module.exports = {
   deactivateTenant,
   handleDeactivateCallback,
   handleSuperAdminText,
+  handleProviderCallback,
+  handleOmadaTypeCallback,
   fixWebhooks,
   reloadTenant,
-  handleProviderCallback,
   testProvider,
-
 };
