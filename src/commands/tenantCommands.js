@@ -247,10 +247,12 @@ ${syncNote}${warn}`
         }
       );
 
-    } catch (err) {
+   } catch (err) {
       const detail = err.response?.data?.message || err.message;
-      logger.error('Payment link error', { tenantId: tid, error: detail });
-      await ctx.editMessageText(`❌ Could not create payment link. Please try again or contact /support.`);
+      const full   = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      logger.error('Payment link error', { tenantId: tid, error: full });
+      console.error('PAYMENT ERROR FULL:', full);
+      await ctx.editMessageText(`❌ Payment error: ${full}`);
     }
   });
 
