@@ -452,9 +452,10 @@ Paste the full contents of your client.crt file
       return finalizeTenant(ctx, state, userId);
     }
 
-  } catch (err) {
+} catch (err) {
     awaitingTenant.delete(userId);
-    logger.error('Tenant creation error', { error: err.message, userId });
+    logger.error('Tenant creation error', { error: err.message, stack: err.stack, userId });
+    console.error('FULL ERROR:', err);
     return ctx.reply(`❌ Something went wrong: ${err.message}\n\nUse /addtenant to try again.`);
   }
 
@@ -464,6 +465,7 @@ Paste the full contents of your client.crt file
 // ── Finalize tenant creation ───────────────────
 async function finalizeTenant(ctx, state, userId) {
   try {
+  logger.info('finalizeTenant called', { userId, provider: state.network_provider, step: state.step });
   const tenantId   = `tenant_${Date.now()}`;
   const webhookUrl = process.env.WEBHOOK_URL || null;
 
