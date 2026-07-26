@@ -520,37 +520,34 @@ bot.command('online', adminOnly(tid, async (ctx) => {
     const map = {};
     res.rows.forEach(r => { map[r.status] = r.count; });
 
-    // Try live data from provider
     if (freshTenant.network_provider !== 'none') {
       try {
         const provider = getProvider(freshTenant);
         const live     = await provider.getOnlineClients();
 
-        const clientLines = live.clients.slice(0, 10).map(c =>
-          `• ${c.name || c.mac} — ${c.ip || '—'}`
+        const groupLines = live.clients.map(g =>
+          `• ${g.name}: ${g.online} used / ${g.unused} unused`
         ).join('\n');
 
         return ctx.replyWithMarkdown(
-`🟢 *Live Network Status*
+`🟢 *Network Status*
 
-Online Now:  *${live.online}*
-DB Active:   *${map['active'] || 0}*
-DB Inactive: *${map['inactive'] || 0}*
+*Voucher Stock by Plan:*
+${groupLines || '_No groups found_'}
 
-${live.clients.length > 0 ? `*Connected Clients:*\n${clientLines}` : '_No clients connected_'}
-${live.clients.length > 10 ? `\n_...and ${live.clients.length - 10} more_` : ''}`
+*Bot Users:*
+Active:   *${map['active']   || 0}*
+Inactive: *${map['inactive'] || 0}*`
         );
-
       } catch (err) {
         logger.warn('Live online fetch failed', { error: err.message });
       }
     }
 
-    // Fallback to DB data
     return ctx.replyWithMarkdown(
 `🟢 *User Status*
 
-Active:   *${map['active'] || 0}*
+Active:   *${map['active']   || 0}*
 Inactive: *${map['inactive'] || 0}*`
     );
   }));
