@@ -464,91 +464,124 @@ Paste the full contents of your client.crt file
 
 // ── Finalize tenant creation ───────────────────
 async function finalizeTenant(ctx, state, userId) {
-  try {
-  logger.info('finalizeTenant called', { userId, provider: state.network_provider, step: state.step });
   const tenantId   = `tenant_${Date.now()}`;
   const webhookUrl = process.env.WEBHOOK_URL || null;
 
-  // Check for duplicate bot token
-  const existing = await db.query(
-    'SELECT tenant_id FROM tenants WHERE bot_token=$1',
-    [encrypt(state.bot_token)]
-  );
-  const existingPlain = await db.query(
-    'SELECT tenant_id FROM tenants WHERE bot_token=$1',
-    [state.bot_token]
-  );
-
-  if (existing.rows.length || existingPlain.rows.length) {
-    const existingId = existing.rows[0]?.tenant_id || existingPlain.rows[0]?.tenant_id;
-    awaitingTenant.delete(userId);
-    return ctx.reply(
-      `❌ That bot token is already registered under tenant \`${existingId}\`.`
-    );
-  }
-
-  await db.query(
-    `INSERT INTO tenants
-     (tenant_id, name, email, telegram_id, bot_token,
-      paystack_secret, paystack_public, webhook_url,
-      network_provider,
-      omada_url, omada_controller_id, omada_site_id, omada_client_id, omada_client_secret,
-      omada_controller_type, omada_cloud_cert, omada_cloud_key,
-      mikrotik_url, mikrotik_username, mikrotik_password)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
-    [
-      tenantId,
-      state.name,
-      state.email,
-      state.owner_telegram_id,
-      encrypt(state.bot_token),
-      encrypt(state.paystack_secret),
-      encrypt(state.paystack_public),
-      webhookUrl,
-      state.network_provider        || 'none',
-      state.omada_url               || null,
-      state.omada_controller_id     || null,
-      state.omada_site_id           || null,
-      state.omada_client_id         ? encrypt(state.omada_client_id)         : null,
-      state.omada_client_secret     ? encrypt(state.omada_client_secret)     : null,
-      state.omada_controller_type   || 'software',
-      state.omada_cloud_cert        || null,
-      state.omada_cloud_key         || null,
-      state.mikrotik_url            || null,
-      state.mikrotik_username       ? encrypt(state.mikrotik_username)       : null,
-      state.mikrotik_password       ? encrypt(state.mikrotik_password)       : null,
-    ]
-  );
-
-  const tenantRes = await db.query(
-    'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
-  );
-  await tenantManager.launchTenant(tenantRes.rows[0]);
-
-  const paystackWebhook = webhookUrl
-    ? `${webhookUrl}/pay/${tenantId}`
-    : 'Set WEBHOOK_URL on Render';
-
- // Test provider connection
-  let providerStatus = '';
-  if (state.network_provider && state.network_provider !== 'none') {
-    try {
-      const { getProvider } = require('../services/providers');
-      const provider        = getProvider(tenantRes.rows[0]);
-      const test            = await provider.testConnection();
-      providerStatus = test.success
-        ? `\n✅ ${state.network_provider} connection verified`
-        : `\n⚠️ ${state.network_provider} connection failed: ${test.message}`;
-    } catch (e) {
-      logger.error('Provider test error in finalizeTenant', { error: e.message, stack: e.stack });
-      providerStatus = `\n⚠️ Could not test provider: ${e.message}`;
-    }
-  }
-
-  // Notify tenant owner
   try {
-    await ctx.telegram.sendMessage(
-      state.owner_telegram_id,
+    logger.info('finalizeTenant started', {
+      userId,
+      provider:  state.network_provider,
+      name:      state.name,
+      has_token: !!state.bot_token,
+    });
+
+    // Step 1 — Check duplicate token
+    let existingId = null;
+    try {
+      const existing = await db.query(
+        'SELECT tenant_id FROM tenants WHERE bot_token=$1',
+        [encrypt(state.bot_token)]
+      );
+      const existingPlain = await db.query(
+        'SELECT tenant_id FROM tenants WHERE bot_token=$1',
+        [state.bot_token]
+      );
+      if (existing.rows.length || existingPlain.rows.length) {
+        existingId = existing.rows[0]?.tenant_id || existingPlain.rows[0]?.tenant_id;
+      }
+    } catch (e) {
+      logger.error('Duplicate check failed', { error: e.message });
+      throw new Error(`Duplicate check failed: ${e.message}`);
+    }
+
+    if (existingId) {
+      awaitingTenant.delete(userId);
+      return ctx.reply(`❌ That bot token is already registered under tenant \`${existingId}\`.`);
+    }
+
+    logger.info('Duplicate check passed, inserting tenant...');
+
+    // Step 2 — Insert tenant
+    try {
+      await db.query(
+        `INSERT INTO tenants
+         (tenant_id, name, email, telegram_id, bot_token,
+          paystack_secret, paystack_public, webhook_url,
+          network_provider,
+          omada_url, omada_controller_id, omada_site_id,
+          omada_client_id, omada_client_secret,
+          omada_controller_type, omada_cloud_cert, omada_cloud_key,
+          mikrotik_url, mikrotik_username, mikrotik_password)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+        [
+          tenantId,
+          state.name,
+          state.email,
+          state.owner_telegram_id,
+          encrypt(state.bot_token),
+          encrypt(state.paystack_secret),
+          encrypt(state.paystack_public),
+          webhookUrl,
+          state.network_provider      || 'none',
+          state.omada_url             || null,
+          state.omada_controller_id   || null,
+          state.omada_site_id         || null,
+          state.omada_client_id       ? encrypt(state.omada_client_id)     : null,
+          state.omada_client_secret   ? encrypt(state.omada_client_secret) : null,
+          state.omada_controller_type || 'software',
+          state.omada_cloud_cert      || null,
+          state.omada_cloud_key       || null,
+          state.mikrotik_url          || null,
+          state.mikrotik_username     ? encrypt(state.mikrotik_username)   : null,
+          state.mikrotik_password     ? encrypt(state.mikrotik_password)   : null,
+        ]
+      );
+    } catch (e) {
+      logger.error('DB insert failed', { error: e.message });
+      throw new Error(`DB insert failed: ${e.message}`);
+    }
+
+    logger.info('Tenant inserted, launching bot...');
+
+    // Step 3 — Launch bot
+    const tenantRes = await db.query(
+      'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
+    );
+
+    try {
+      await tenantManager.launchTenant(tenantRes.rows[0]);
+    } catch (e) {
+      logger.error('Bot launch failed', { error: e.message });
+      throw new Error(`Bot launch failed: ${e.message}`);
+    }
+
+    logger.info('Bot launched, testing provider...');
+
+    // Step 4 — Test provider
+    const paystackWebhook = webhookUrl
+      ? `${webhookUrl}/pay/${tenantId}`
+      : 'Set WEBHOOK_URL on Render';
+
+    let providerStatus = '';
+    if (state.network_provider && state.network_provider !== 'none') {
+      try {
+        const { getProvider } = require('../services/providers');
+        const provider        = getProvider(tenantRes.rows[0]);
+        const test            = await provider.testConnection();
+        providerStatus = test.success
+          ? `\n✅ ${state.network_provider} connection verified`
+          : `\n⚠️ ${state.network_provider} failed: ${test.message}`;
+        logger.info('Provider test result', { success: test.success, message: test.message });
+      } catch (e) {
+        logger.error('Provider test error', { error: e.message });
+        providerStatus = `\n⚠️ Could not test provider: ${e.message}`;
+      }
+    }
+
+    // Step 5 — Notify owner
+    try {
+      await ctx.telegram.sendMessage(
+        state.owner_telegram_id,
 `🎉 *Your ISP Bot is Live — ${state.name}!*
 
 You have full admin access to your bot.
@@ -571,15 +604,17 @@ You have full admin access to your bot.
 *Action Required — Paystack Webhook:*
 Go to dashboard.paystack.com → Settings → API Keys & Webhooks and paste:
 \`${paystackWebhook}\``,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (e) {
-    logger.warn('Could not notify tenant owner', { error: e.message });
-  }
+        { parse_mode: 'Markdown' }
+      );
+    } catch (e) {
+      logger.warn('Could not notify tenant owner', { error: e.message });
+    }
 
-  awaitingTenant.delete(userId);
+    awaitingTenant.delete(userId);
 
-  return ctx.replyWithMarkdown(
+    logger.info('Tenant created successfully', { tenantId, name: state.name });
+
+    return ctx.replyWithMarkdown(
 `✅ *Tenant Created & Bot Launched!*
 
 Name:      ${state.name}
@@ -591,14 +626,14 @@ Provider:  ${state.network_provider || 'none'}${providerStatus}
 \`${paystackWebhook}\`
 
 _Tenant has been notified._`
-  );
+    );
+
   } catch (err) {
     awaitingTenant.delete(userId);
-    logger.error('Tenant creation error', { error: err.message, userId });
-    return ctx.reply(`❌ Something went wrong: ${err.message}\n\nUse /addtenant to try again.`);
+    logger.error('finalizeTenant failed', { error: err.message, stack: err.stack });
+    return ctx.reply(`❌ Failed to create tenant: ${err.message}`);
   }
 }
-
 module.exports = {
   startAddTenant,
   listTenants,
