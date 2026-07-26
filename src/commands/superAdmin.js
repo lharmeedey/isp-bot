@@ -463,6 +463,7 @@ Paste the full contents of your client.crt file
 
 // ── Finalize tenant creation ───────────────────
 async function finalizeTenant(ctx, state, userId) {
+  try {
   const tenantId   = `tenant_${Date.now()}`;
   const webhookUrl = process.env.WEBHOOK_URL || null;
 
@@ -526,7 +527,7 @@ async function finalizeTenant(ctx, state, userId) {
     ? `${webhookUrl}/pay/${tenantId}`
     : 'Set WEBHOOK_URL on Render';
 
-  // Test provider connection
+ // Test provider connection
   let providerStatus = '';
   if (state.network_provider && state.network_provider !== 'none') {
     try {
@@ -537,17 +538,10 @@ async function finalizeTenant(ctx, state, userId) {
         ? `\n✅ ${state.network_provider} connection verified`
         : `\n⚠️ ${state.network_provider} connection failed: ${test.message}`;
     } catch (e) {
+      logger.error('Provider test error in finalizeTenant', { error: e.message, stack: e.stack });
       providerStatus = `\n⚠️ Could not test provider: ${e.message}`;
     }
   }
-
-  logger.info('Tenant created', {
-    tenantId,
-    name:     state.name,
-    provider: state.network_provider,
-    ownerId:  state.owner_telegram_id,
-    by:       userId,
-  });
 
   // Notify tenant owner
   try {
@@ -596,6 +590,11 @@ Provider:  ${state.network_provider || 'none'}${providerStatus}
 
 _Tenant has been notified._`
   );
+  } catch (err) {
+    awaitingTenant.delete(userId);
+    logger.error('Tenant creation error', { error: err.message, userId });
+    return ctx.reply(`❌ Something went wrong: ${err.message}\n\nUse /addtenant to try again.`);
+  }
 }
 
 module.exports = {
