@@ -144,6 +144,10 @@ function createWebhookRouter(masterApp) {
     rateLimitMiddleware,
     express.raw({ type: 'application/json' }),
     async (req, res) => {
+
+      logger.info("========== PAYSTACK WEBHOOK HIT ==========");
+logger.info("Tenant:", req.params.tenantId);
+logger.info("Headers:", req.headers);
       const { tenantId } = req.params;
       const entry = tenantBots.get(tenantId);
 
