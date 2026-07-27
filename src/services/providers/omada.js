@@ -149,57 +149,67 @@ class OmadaProvider {
     return res.data.result?.data || [];
   }
 
- async createVoucher({ plan, email, reference, planConfig }) {
+  async createVoucher({ plan, email, reference, planConfig }) {
+    logger.info('Creating Omada voucher', {
+      tenantId: this.tenant.tenant_id,
+      plan,
+      email,
+    });
 
-  logger.info('Fetching unused Omada voucher', {
-    tenantId: this.tenant.tenant_id,
-    plan,
-    email,
-  });
+    const voucherGroupId = planConfig?.omadaProfileId;
 
-  const voucherGroupId = planConfig?.omadaProfileId;
-
-  if (!voucherGroupId) {
-    throw new Error(`No voucher group configured for ${plan}`);
-  }
-
-  const token = await this._getToken();
-  const omadacId = await this._getOmadacId();
-
-  const response = await axios.get(
-    `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/voucher-groups/${voucherGroupId}/print-unused`,
-    {
-      httpsAgent: this._httpsAgent,
-      timeout: 15000,
-      headers: {
-        Authorization: `AccessToken=${token}`,
-      },
+    if (!voucherGroupId) {
+      throw new Error(
+        `No Omada voucher group ID configured for plan: ${plan}. Check your PLANS env variable.`
+      );
     }
-  );
 
-  if (response.data.errorCode !== 0) {
-    throw new Error(response.data.msg);
+    const omadacId = await this._getOmadacId();
+    const token    = await this._getToken();
+
+    // const res = await axios.post(
+    //   `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/vouchers`,
+    //   { voucherGroupId, amount: 1 },
+    //   {
+    //     httpsAgent: this._httpsAgent,
+    //     timeout:    15000,
+    //     headers: {
+    //       Authorization:  `AccessToken=${token}`,
+    //       'Content-Type': 'application/json',
+    //     },
+    //   }
+    // );
+
+    if (res.data?.errorCode !== 0) {
+      throw new Error(
+        `Omada voucher creation failed: ${res.data?.msg} (code: ${res.data?.errorCode})`
+      );
+    }
+
+    const result   = res.data.result;
+    const vouchers = result?.data || result;
+    const voucher  = Array.isArray(vouchers) ? vouchers[0] : vouchers;
+
+    if (!voucher?.code) {
+      logger.error('Unexpected Omada voucher response', {
+        result: JSON.stringify(result),
+      });
+      throw new Error('Omada did not return a voucher code');
+    }
+
+    logger.info('Omada voucher created', {
+      tenantId:  this.tenant.tenant_id,
+      code:      voucher.code,
+      voucherId: voucher.id,
+    });
+
+    return {
+      code:           voucher.code,
+      omadaVoucherId: voucher.id || null,
+      provider:       `omada_${this.controllerType}`,
+    };
   }
 
-  const vouchers = response.data.result;
-
-  if (!Array.isArray(vouchers) || vouchers.length === 0) {
-    throw new Error("No unused vouchers available.");
-  }
-
-  const voucher = vouchers[0];
-
-  logger.info("Using existing voucher", {
-    code: voucher.code,
-    plan,
-  });
-
-  return {
-    code: voucher.code,
-    omadaVoucherId: null,
-    provider: `omada_${this.controllerType}`,
-  };
-}
   async getUsage(omadaVoucherId) {
     // Omada OpenAPI v3 does not expose a voucher usage endpoint
     // Balance is tracked via the local database instead

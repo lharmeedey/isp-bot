@@ -250,7 +250,8 @@ try {
       planConfig: planObj,
       provider: freshTenant.network_provider,
     });
-
+console.log(">>> ABOUT TO CALL provider.createVoucher()");
+logger.info(">>> ABOUT TO CALL provider.createVoucher()");
     const result = await provider.createVoucher({
       plan,
       email,
@@ -259,24 +260,31 @@ try {
     });
 
     logger.info('Provider createVoucher result', { result: JSON.stringify(result) });
-
+console.log(">>> provider.createVoucher() RETURNED");
+logger.info(">>> provider.createVoucher() RETURNED");
     voucherCode    = result.code;
     omadaVoucherId = result.omadaVoucherId;
 
-  } catch (err) {
-    providerError = err.message;
-    logger.error('Provider voucher creation failed', {
-      tenantId,
-      provider: freshTenant.network_provider,
-      error:    err.message,
-      stack:    err.stack,
+ } catch (err) {
+
+    console.log("==========================================");
+    console.log("OMADA CREATE VOUCHER FAILED");
+    console.log("Message:", err.message);
+    console.log("Status:", err.response?.status);
+    console.log("Response:", JSON.stringify(err.response?.data, null, 2));
+    console.log("Stack:", err.stack);
+    console.log("==========================================");
+
+    logger.error("OMADA CREATE VOUCHER FAILED", {
+        tenantId,
+        message: err.message,
+        status: err.response?.status,
+        response: err.response?.data,
+        stack: err.stack,
     });
-    // Fall back to generating a random code so customer still gets something
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    voucherCode = Array.from({ length: 8 }, () =>
-      chars[Math.floor(Math.random() * chars.length)]
-    ).join('');
-  }
+
+    throw err;
+}
 
   // ── DB transaction — all writes succeed or all fail ──
   const client = await db.getClient();
