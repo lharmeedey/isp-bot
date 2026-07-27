@@ -243,13 +243,22 @@ async function handlePayment(bot, tenant, data) {
   let omadaVoucherId   = null;
   let providerError    = null;
 
-  try {
+try {
+    logger.info('Calling provider.createVoucher', {
+      tenantId,
+      plan,
+      planConfig: planObj,
+      provider: freshTenant.network_provider,
+    });
+
     const result = await provider.createVoucher({
       plan,
       email,
       reference: data.reference,
       planConfig: planObj,
     });
+
+    logger.info('Provider createVoucher result', { result: JSON.stringify(result) });
 
     voucherCode    = result.code;
     omadaVoucherId = result.omadaVoucherId;
@@ -260,8 +269,8 @@ async function handlePayment(bot, tenant, data) {
       tenantId,
       provider: freshTenant.network_provider,
       error:    err.message,
+      stack:    err.stack,
     });
-
     // Fall back to generating a random code so customer still gets something
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     voucherCode = Array.from({ length: 8 }, () =>
