@@ -1,6 +1,7 @@
 const axios  = require('axios');
 const https  = require('https');
 const logger = require('../logger');
+const { decrypt } = require('../encryption');
 
 class OmadaProvider {
   constructor(tenant) {
@@ -8,8 +9,8 @@ class OmadaProvider {
     this.baseUrl        = tenant.omada_url?.replace(/\/$/, '');
     this.omadacId       = tenant.omada_controller_id || null;
     this.siteId         = tenant.omada_site_id;
-    this.clientId       = tenant.omada_client_id;
-    this.clientSecret   = tenant.omada_client_secret;
+    this.clientId       = decrypt(tenant.omada_client_id)   || tenant.omada_client_id;
+    this.clientSecret   = decrypt(tenant.omada_client_secret) || tenant.omada_client_secret;
     this.controllerType = tenant.omada_controller_type || 'software';
     this._accessToken   = null;
     this._tokenExpiry   = null;
@@ -62,6 +63,12 @@ class OmadaProvider {
 
     const omadacId = await this._getOmadacId();
 
+    logger.debug('Getting Omada token', {
+      tenantId:        this.tenant.tenant_id,
+      clientIdPreview: this.clientId?.slice(0, 8),
+      hasSecret:       !!this.clientSecret,
+    });
+
     const res = await axios.post(
       `${this.baseUrl}/openapi/authorize/token?grant_type=client_credentials`,
       {
@@ -102,8 +109,8 @@ class OmadaProvider {
       httpsAgent: this._httpsAgent,
       timeout:    15000,
       headers: {
-        'Content-Type':  'application/json',
-        Authorization:   `AccessToken=${token}`,
+        'Content-Type': 'application/json',
+        Authorization:  `AccessToken=${token}`,
       },
     };
 
@@ -149,7 +156,7 @@ class OmadaProvider {
     return res.data.result?.data || [];
   }
 
- async createVoucher({ plan, email, reference, planConfig }) {
+  async createVoucher({ plan, email, reference, planConfig }) {
     logger.info('Creating Omada voucher', {
       tenantId: this.tenant.tenant_id,
       plan,
@@ -209,22 +216,19 @@ class OmadaProvider {
       provider:       `omada_${this.controllerType}`,
     };
   }
+
   async getUsage(omadaVoucherId) {
-    // Omada OpenAPI v3 does not expose a voucher usage endpoint
-    // Balance is tracked via the local database instead
     return null;
   }
 
   async getOnlineClients() {
     try {
-      const groups     = await this.getVoucherGroups();
-      const totalUsed  = groups.reduce(
-        (sum, g) => sum + ((g.totalCount || 0) - (g.unusedCount || 0)),
-        0
+      const groups      = await this.getVoucherGroups();
+      const totalUsed   = groups.reduce(
+        (sum, g) => sum + ((g.totalCount || 0) - (g.unusedCount || 0)), 0
       );
       const totalUnused = groups.reduce(
-        (sum, g) => sum + (g.unusedCount || 0),
-        0
+        (sum, g) => sum + (g.unusedCount || 0), 0
       );
 
       return {
@@ -265,7 +269,6 @@ class OmadaProvider {
     try {
       await this._getOmadacId();
       await this._getToken();
-
       const groups = await this.getVoucherGroups();
 
       return {
