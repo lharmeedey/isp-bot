@@ -149,7 +149,7 @@ class OmadaProvider {
     return res.data.result?.data || [];
   }
 
-  async createVoucher({ plan, email, reference, planConfig }) {
+ async createVoucher({ plan, email, reference, planConfig }) {
     logger.info('Creating Omada voucher', {
       tenantId: this.tenant.tenant_id,
       plan,
@@ -167,18 +167,18 @@ class OmadaProvider {
     const omadacId = await this._getOmadacId();
     const token    = await this._getToken();
 
-    // const res = await axios.post(
-    //   `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/vouchers`,
-    //   { voucherGroupId, amount: 1 },
-    //   {
-    //     httpsAgent: this._httpsAgent,
-    //     timeout:    15000,
-    //     headers: {
-    //       Authorization:  `AccessToken=${token}`,
-    //       'Content-Type': 'application/json',
-    //     },
-    //   }
-    // );
+    const res = await axios.post(
+      `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/vouchers`,
+      { voucherGroupId, amount: 1 },
+      {
+        httpsAgent: this._httpsAgent,
+        timeout:    15000,
+        headers: {
+          Authorization:  `AccessToken=${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
     if (res.data?.errorCode !== 0) {
       throw new Error(
@@ -209,7 +209,6 @@ class OmadaProvider {
       provider:       `omada_${this.controllerType}`,
     };
   }
-
   async getUsage(omadaVoucherId) {
     // Omada OpenAPI v3 does not expose a voucher usage endpoint
     // Balance is tracked via the local database instead
