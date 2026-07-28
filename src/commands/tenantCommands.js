@@ -4,7 +4,7 @@ const { decrypt }        = require('../services/encryption');
 const { commandLimiter, paymentLimiter } = require('../services/rateLimiter');
 const { naira, gb, date, syncAge, usageBar, planKeyboard } = require('../services/helpers');
 const axios   = require('axios');
-
+const { registerSyncCommands, handleVoucherText } = require('./syncVouchers');
 const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
   .split(',').map(Number).filter(Boolean);
 
@@ -17,6 +17,9 @@ function register(bot, tenant) {
   ]));
 
   const tid = tenant.tenant_id;
+
+  // Register voucher sync commands and get state
+  const { awaitingVouchers } = registerSyncCommands(bot, tenant);
 
   // Per-tenant registration state — persists in memory per bot instance
   const awaitingEmail    = new Set();
@@ -617,6 +620,11 @@ They can get it by messaging @userinfobot.`
 
     // Skip commands
     if (text.startsWith('/')) return next();
+
+    // ── Voucher upload flow ───────────────────────
+    if (awaitingVouchers.has(userId)) {
+      return handleVoucherText(ctx, next, awaitingVouchers);
+    }
 
     // ── Sub-admin registration flow ──────────────
     if (awaitingSubAdmin.has(userId)) {
