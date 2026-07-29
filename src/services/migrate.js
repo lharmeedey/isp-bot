@@ -97,9 +97,12 @@ async function migrate() {
     { name: 'omada_site_id',       def: 'VARCHAR(100)' },
     { name: 'omada_client_id',     def: 'VARCHAR(200)' },
     { name: 'omada_client_secret', def: 'VARCHAR(200)' },
+    { name: 'omada_admin_username', def: 'VARCHAR(200)' },
+    { name: 'omada_admin_password', def: 'VARCHAR(200)' },
     { name: 'mikrotik_url',        def: 'VARCHAR(200)' },
     { name: 'mikrotik_username',   def: 'VARCHAR(200)' },
     { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
+  
   ];
 
   for (const col of columns) {

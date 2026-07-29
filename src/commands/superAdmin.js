@@ -385,8 +385,26 @@ Example: 6a6393445c7bdd073c22a2ac`
       return ctx.reply('Step 9 — Enter the Omada API Client Secret:');
     }
 
-    if (state.step === 'omada_client_secret') {
+  if (state.step === 'omada_client_secret') {
       state.omada_client_secret = text;
+      state.step                = 'omada_admin_username';
+      awaitingTenant.set(userId, state);
+      return ctx.reply(
+`Step 9a — Omada Admin Username
+
+Enter the email/username you use to log into the Omada controller dashboard:`
+      );
+    }
+
+    if (state.step === 'omada_admin_username') {
+      state.omada_admin_username = text;
+      state.step                 = 'omada_admin_password';
+      awaitingTenant.set(userId, state);
+      return ctx.reply('Step 9b — Enter the Omada admin password:');
+    }
+
+    if (state.step === 'omada_admin_password') {
+      state.omada_admin_password = text;
 
       // Cloud needs certificates
       if (state.omada_controller_type === 'cloud') {
@@ -508,9 +526,9 @@ async function finalizeTenant(ctx, state, userId) {
          (tenant_id, name, email, telegram_id, bot_token,
           paystack_secret, paystack_public, webhook_url,
           network_provider,
-          omada_url, omada_controller_id, omada_site_id,
-          omada_client_id, omada_client_secret,
-          omada_controller_type, omada_cloud_cert, omada_cloud_key,
+      omada_url, omada_controller_id, omada_site_id, omada_client_id, omada_client_secret,
+      omada_controller_type, omada_cloud_cert, omada_cloud_key,
+      omada_admin_username, omada_admin_password,
           mikrotik_url, mikrotik_username, mikrotik_password)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
         [
@@ -531,6 +549,8 @@ async function finalizeTenant(ctx, state, userId) {
           state.omada_controller_type || 'software',
           state.omada_cloud_cert      || null,
           state.omada_cloud_key       || null,
+          state.omada_admin_username ? encrypt(state.omada_admin_username) : null,
+          state.omada_admin_password ? encrypt(state.omada_admin_password) : null,
           state.mikrotik_url          || null,
           state.mikrotik_username     ? encrypt(state.mikrotik_username)   : null,
           state.mikrotik_password     ? encrypt(state.mikrotik_password)   : null,
