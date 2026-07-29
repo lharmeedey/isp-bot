@@ -9,9 +9,9 @@ const { clearProviderCache } = require('./providers');
 
 const tenantBots = new Map();
 
-// ── Load and launch all active tenants ────────
 async function launchAllTenants() {
   try {
+    await db.query('SELECT 1');
     const res = await db.query(
       'SELECT * FROM tenants WHERE active=true AND bot_token IS NOT NULL'
     );
@@ -29,7 +29,6 @@ async function launchAllTenants() {
   }
 }
 
-// ── Launch a single tenant bot ─────────────────
 async function launchTenant(tenant) {
   if (tenantBots.has(tenant.tenant_id)) {
     logger.warn('Bot already running', { tenantId: tenant.tenant_id });
@@ -42,7 +41,7 @@ async function launchTenant(tenant) {
 
   logger.info('Launching tenant bot', { name: tenant.name, tenantId: tenant.tenant_id });
 
-  const botToken = decrypt(tenant.bot_token);
+  const botToken = decrypt(tenant.bot_token) || tenant.bot_token;
   if (!botToken) throw new Error(`Could not decrypt bot token for: ${tenant.tenant_id}`);
 
   const bot = new Telegraf(botToken, { handlerTimeout: 90000 });
@@ -84,7 +83,6 @@ async function launchTenant(tenant) {
   logger.info('Bot live', { name: tenant.name, tenantId: tenant.tenant_id });
 }
 
-// ── Stop a tenant bot ──────────────────────────
 async function stopTenant(tenantId) {
   const entry = tenantBots.get(tenantId);
   if (!entry) return;
@@ -102,7 +100,6 @@ async function stopTenant(tenantId) {
   }
 }
 
-// ── Express webhook router ─────────────────────
 function createWebhookRouter(masterApp) {
   const rateLimitMiddleware = (req, res, next) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
@@ -113,7 +110,6 @@ function createWebhookRouter(masterApp) {
     next();
   };
 
-  // Tenant bot updates
   masterApp.post('/bot/:tenantId', rateLimitMiddleware, express.json(), async (req, res) => {
     const { tenantId } = req.params;
     const entry = tenantBots.get(tenantId);
@@ -131,7 +127,6 @@ function createWebhookRouter(masterApp) {
     }
   });
 
-  // Paystack payment webhooks
   masterApp.post(
     '/pay/:tenantId',
     rateLimitMiddleware,
@@ -147,15 +142,14 @@ function createWebhookRouter(masterApp) {
         return res.sendStatus(404);
       }
 
-      // Always fetch fresh Paystack secret from DB for signature validation
       try {
+        // Always fetch fresh Paystack secret from DB
         const tenantRow = await db.query(
           'SELECT paystack_secret FROM tenants WHERE tenant_id=$1',
           [tenantId]
         );
 
         if (!tenantRow.rows.length) {
-          logger.warn('Tenant not found in DB for webhook', { tenantId });
           return res.sendStatus(404);
         }
 
@@ -163,20 +157,18 @@ function createWebhookRouter(masterApp) {
         const paystackSecret = decrypt(rawSecret) || rawSecret;
         const signature      = req.headers['x-paystack-signature'];
 
-        logger.info('Validating webhook signature', {
-          tenantId,
-          secretPreview: paystackSecret?.slice(0, 15),
-          secretLength:  paystackSecret?.length,
-          hasSignature:  !!signature,
-        });
-
         const hash = crypto
           .createHmac('sha512', paystackSecret)
           .update(req.body)
           .digest('hex');
 
         const signatureMatch = hash === signature;
-        logger.info('Signature result', { tenantId, match: signatureMatch });
+
+        logger.info('Webhook signature check', {
+          tenantId,
+          match:         signatureMatch,
+          secretPreview: paystackSecret?.slice(0, 15),
+        });
 
         if (!signatureMatch) {
           logger.warn('Invalid Paystack signature', { tenantId });
@@ -187,7 +179,7 @@ function createWebhookRouter(masterApp) {
         res.sendStatus(200);
 
         const event = JSON.parse(req.body);
-        logger.info('Paystack event', { tenantId, event: event.event });
+        logger.info('Paystack event received', { tenantId, event: event.event });
 
         if (event.event === 'charge.success') {
           await handlePayment(entry.bot, entry.tenant, event.data);
@@ -200,7 +192,6 @@ function createWebhookRouter(masterApp) {
     }
   );
 
-  // Health check
   masterApp.get('/health', (_, res) => {
     const tenants = Array.from(tenantBots.entries()).map(([id, { tenant }]) => ({
       id,
@@ -219,7 +210,6 @@ function createWebhookRouter(masterApp) {
   });
 }
 
-// ── Handle confirmed Paystack payment ─────────
 async function handlePayment(bot, tenant, data) {
   const { telegram_id, plan, email } = data.metadata || {};
 
@@ -231,7 +221,7 @@ async function handlePayment(bot, tenant, data) {
   const tid      = Number(telegram_id);
   const tenantId = tenant.tenant_id;
 
-  logger.info('Processing payment', { tid, plan, email, tenantId });
+  logger.info('Processing payment', { tid, plan, email, tenantId, reference: data.reference });
 
   // Prevent duplicate processing
   const dup = await db.query(
@@ -251,13 +241,20 @@ async function handlePayment(bot, tenant, data) {
   const expiry = new Date();
   expiry.setDate(expiry.getDate() + days);
 
-  // Fetch fresh tenant from DB
+  // Always fetch fresh tenant from DB for provider
   const freshTenantRes = await db.query(
     'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
   );
-  const freshTenant = freshTenantRes.rows[0] || tenant;
+  const freshTenant = freshTenantRes.rows[0];
 
-  // Create voucher via provider
+  if (!freshTenant) {
+    logger.error('Tenant not found in DB during payment', { tenantId });
+    return;
+  }
+
+  // Clear provider cache to force fresh credentials
+  clearProviderCache(tenantId);
+
   const { getProvider } = require('./providers');
   const provider        = getProvider(freshTenant);
 
@@ -265,14 +262,14 @@ async function handlePayment(bot, tenant, data) {
   let omadaVoucherId = null;
   let providerError  = null;
 
-  try {
-    logger.info('Calling provider.createVoucher', {
-      tenantId,
-      plan,
-      provider:  freshTenant.network_provider,
-      planConfig: planObj,
-    });
+  logger.info('Calling provider createVoucher', {
+    tenantId,
+    plan,
+    provider:   freshTenant.network_provider,
+    planConfig: JSON.stringify(planObj),
+  });
 
+  try {
     const result = await provider.createVoucher({
       plan,
       email,
@@ -283,7 +280,12 @@ async function handlePayment(bot, tenant, data) {
     voucherCode    = result.code;
     omadaVoucherId = result.omadaVoucherId;
 
-    logger.info('Voucher created by provider', { voucherCode, omadaVoucherId });
+    logger.info('Voucher created by provider', {
+      tenantId,
+      voucherCode,
+      omadaVoucherId,
+      provider: freshTenant.network_provider,
+    });
 
   } catch (err) {
     providerError = err.message;
@@ -291,9 +293,10 @@ async function handlePayment(bot, tenant, data) {
       tenantId,
       provider: freshTenant.network_provider,
       error:    err.message,
+      stack:    err.stack,
     });
 
-    // Generate fallback code so customer still gets something
+    // Fallback random code
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     voucherCode = Array.from({ length: 8 }, () =>
       chars[Math.floor(Math.random() * chars.length)]
@@ -340,47 +343,34 @@ Expiry:   ${expiry.toDateString()}
 _Connect to the WiFi network and enter your password on the login page._`;
 
     if (providerError) {
-      message += `\n\n_⚠️ Note: If this code doesn't work, contact /support._`;
+      message += `\n\n_⚠️ If this code doesn't work, contact /support._`;
     }
 
     await bot.telegram.sendMessage(tid, message, { parse_mode: 'Markdown' });
 
-    logger.info('Payment processed successfully', {
+    logger.info('Payment fully processed', {
+      tenantId,
       plan,
       email,
-      tenantId,
-      reference:   data.reference,
-      amount:      data.amount / 100,
-      provider:    freshTenant.network_provider,
       voucherCode,
-      fromOmada:   !providerError,
+      fromOmada:  !providerError,
+      reference:  data.reference,
     });
 
   } catch (err) {
     await client.query('ROLLBACK');
-
-    if (omadaVoucherId) {
-      try {
-        await provider.deactivateVoucher(omadaVoucherId);
-      } catch (e) {
-        logger.error('Failed to rollback Omada voucher', { omadaVoucherId });
-      }
-    }
-
-    logger.error('Payment transaction failed', {
+    logger.error('Payment DB transaction failed', {
       reference: data.reference,
       error:     err.message,
     });
 
-    // Still try to notify user even if DB failed
     try {
       await bot.telegram.sendMessage(
         tid,
-        `⚠️ Your payment was received but there was a technical issue. Please contact /support with reference: ${data.reference}`,
-        { parse_mode: 'Markdown' }
+        `⚠️ Payment received but technical error occurred. Contact /support with reference: ${data.reference}`
       );
     } catch (e) {
-      logger.error('Could not notify user of payment failure', { tid });
+      logger.error('Could not notify user of failure', { tid });
     }
 
   } finally {
