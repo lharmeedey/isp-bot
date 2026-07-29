@@ -494,6 +494,54 @@ Revenue:   *${naira(res.rows[0].total)}*`
     );
   }));
 
+
+  bot.command('syncnow', adminOnly(tid, async (ctx) => {
+    await ctx.reply('⏳ Syncing vouchers from Omada...');
+
+    try {
+      const { getProvider } = require('../services/providers');
+      const freshTenantRes  = await db.query(
+        'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
+      );
+      const freshTenant = freshTenantRes.rows[0];
+
+      if (freshTenant.network_provider !== 'omada') {
+        return ctx.reply('This tenant is not using Omada.');
+      }
+
+      const provider = getProvider(freshTenant);
+      const result   = await provider.syncVouchersToDb(db);
+
+      // Show current stock after sync
+      const stockRes = await db.query(
+        `SELECT plan,
+                COUNT(*) FILTER (WHERE status='unused') as unused,
+                COUNT(*) as total
+         FROM voucher_stock
+         WHERE tenant_id=$1
+         GROUP BY plan ORDER BY plan`,
+        [tid]
+      );
+
+      const lines = stockRes.rows.map(r =>
+        `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
+      ).join('\n');
+
+      return ctx.replyWithMarkdown(
+`✅ *Sync Complete*
+
+New vouchers added: ${result.totalInserted}
+
+*Current Stock:*
+${lines || '_No vouchers in stock_'}`
+      );
+
+    } catch (err) {
+      logger.error('Manual sync failed', { tenantId: tid, error: err.message });
+      return ctx.reply(`❌ Sync failed: ${err.message}`);
+    }
+  }));
+
   bot.command('stock', adminOnly(tid, async (ctx) => {
     const res = await db.query(
       'SELECT COALESCE(SUM(total_gb),0) as sold FROM users WHERE tenant_id=$1',

@@ -238,6 +238,38 @@ cron.schedule('*/15 * * * *', async () => {
     }
   }
 });
+
+
+// ── Sync Omada vouchers every 30 minutes ──────
+cron.schedule('*/30 * * * *', async () => {
+  logger.debug('Running Omada voucher sync job');
+  const bots             = tenantManager.getActiveTenants();
+  const { getProvider }  = require('./services/providers');
+
+  for (const [tenantId, { tenant }] of bots) {
+    try {
+      const tenantRes   = await db.query(
+        'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
+      );
+      const freshTenant = tenantRes.rows[0];
+
+      if (freshTenant?.network_provider !== 'omada') continue;
+
+      const provider = getProvider(freshTenant);
+      const result   = await provider.syncVouchersToDb(db);
+
+      if (result.totalInserted > 0) {
+        logger.info('Omada voucher sync complete', {
+          tenantId,
+          inserted: result.totalInserted,
+        });
+      }
+
+    } catch (err) {
+      logger.error('Omada sync job error', { tenantId, error: err.message });
+    }
+  }
+});
 // ── Keep Render awake ──────────────────────────
 if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {
   setInterval(() => {
