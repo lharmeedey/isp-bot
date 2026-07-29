@@ -245,7 +245,7 @@ class OmadaProvider {
   }
 
   // ── Main createVoucher — live creation ─────────
-  async createVoucher({ plan, email, reference, planConfig }) {
+async createVoucher({ plan, email, reference, planConfig }) {
     logger.info('Creating live Omada voucher', {
       tenantId: this.tenant.tenant_id,
       plan,
@@ -253,6 +253,7 @@ class OmadaProvider {
     });
 
     const groupId = planConfig?.omadaProfileId;
+
     if (!groupId) {
       throw new Error(
         `No Omada voucher group ID for plan: ${plan}. Check PLANS env variable.`
@@ -273,7 +274,6 @@ class OmadaProvider {
       provider:       `omada_${this.controllerType}`,
     };
   }
-
   // ── Sync vouchers to DB stock (for backup) ─────
   async syncVouchersToDb(db) {
     const groups = await this.getVoucherGroups();
