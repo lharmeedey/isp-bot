@@ -132,10 +132,14 @@ async function migrate() {
   }
 
   // Add omada_status and last_synced to voucher_stock if missing
-  const stockCols = [
-    { name: 'omada_status', def: 'INTEGER' },
-    { name: 'last_synced', def: 'TIMESTAMP' },
-  ];
+const stockCols = [
+  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
+  { name: 'email', def: 'VARCHAR(255)' },
+  { name: 'reference', def: 'VARCHAR(100)' },
+  { name: 'assigned_at', def: 'TIMESTAMP' },
+  { name: 'omada_status', def: 'INTEGER' },
+  { name: 'last_synced', def: 'TIMESTAMP' },
+];
 
   for (const col of stockCols) {
     const exists = await db.query(`
@@ -149,6 +153,29 @@ async function migrate() {
     }
   }
 
+  // Add missing voucher_stock columns
+const voucherStockCols = [
+  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
+  { name: 'email', def: 'VARCHAR(255)' },
+  { name: 'reference', def: 'VARCHAR(100)' },
+  { name: 'assigned_at', def: 'TIMESTAMP' }
+];
+
+for (const col of voucherStockCols) {
+  const exists = await db.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name='voucher_stock'
+      AND column_name=$1
+  `, [col.name]);
+
+  if (!exists.rows.length) {
+    await db.query(
+      `ALTER TABLE voucher_stock ADD COLUMN ${col.name} ${col.def}`
+    );
+    console.log(`✅ Added voucher_stock.${col.name}`);
+  }
+}
   console.log('✅ Migration complete');
   process.exit(0);
 }

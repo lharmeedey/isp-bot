@@ -262,24 +262,28 @@ class OmadaProvider {
               // status 0 = unused, 1 = in use, 2 = expired, 3 = used up
               const dbStatus = v.status === 0 ? 'unused' : 'used';
 
-              await db.query(
-                `INSERT INTO voucher_stock
-                 (tenant_id, plan, code, omada_voucher_id, status)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (code) DO UPDATE
-                 SET status = EXCLUDED.status,
-                     omada_voucher_id = EXCLUDED.omada_voucher_id`,
-                [
-                  this.tenant.tenant_id,
-                  plan.label,
-                  String(v.code),
-                  v.id || null,
-                  dbStatus,
-                ]
-              );
+              const result = await db.query(
+  `INSERT INTO voucher_stock
+   (tenant_id, plan, code, omada_voucher_id, status)
+   VALUES ($1,$2,$3,$4,$5)
+   ON CONFLICT (code)
+   DO UPDATE SET
+       status = EXCLUDED.status,
+       omada_voucher_id = EXCLUDED.omada_voucher_id
+   RETURNING xmax = 0 AS inserted`,
+  [
+      this.tenant.tenant_id,
+      plan.label,
+      String(v.code),
+      v.id || null,
+      dbStatus
+  ]
+);
 
-              if (v.status === 0) totalInserted++;
-              else totalUpdated++;
+if (result.rows[0].inserted)
+    totalInserted++;
+else
+    totalUpdated++;
 
             } catch (e) {
               logger.warn('Voucher insert/update failed', {
