@@ -495,39 +495,39 @@ Revenue:   *${naira(res.rows[0].total)}*`
   }));
 
 bot.command('syncnow', adminOnly(tid, async (ctx) => {
-    await ctx.reply('⏳ Syncing vouchers from Omada...');
+    await ctx.reply('⏳ Sync started in background. Use /stockreport in 2 minutes to see results.');
 
-    try {
-      const { getProvider } = require('../services/providers');
-      const freshTenantRes  = await db.query(
-        'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
-      );
-      const freshTenant = freshTenantRes.rows[0];
+    // Run sync in background — don't await
+    setImmediate(async () => {
+      try {
+        const { getProvider } = require('../services/providers');
+        const freshTenantRes  = await db.query(
+          'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
+        );
+        const freshTenant = freshTenantRes.rows[0];
 
-      if (freshTenant.network_provider !== 'omada') {
-        return ctx.reply('This tenant is not using Omada.');
-      }
+        if (freshTenant.network_provider !== 'omada') return;
 
-      const provider = getProvider(freshTenant);
-      const result   = await provider.syncVouchersToDb(db);
+        const provider = getProvider(freshTenant);
+        const result   = await provider.syncVouchersToDb(db);
 
-      const stockRes = await db.query(
-        `SELECT plan,
-                COUNT(*) FILTER (WHERE status='unused') as unused,
-                COUNT(*) as total
-         FROM voucher_stock
-         WHERE tenant_id=$1
-         GROUP BY plan ORDER BY plan`,
-        [tid]
-      );
+        const stockRes = await db.query(
+          `SELECT plan,
+                  COUNT(*) FILTER (WHERE status='unused') as unused,
+                  COUNT(*) as total
+           FROM voucher_stock
+           WHERE tenant_id=$1
+           GROUP BY plan ORDER BY plan`,
+          [tid]
+        );
 
-      const lines = stockRes.rows.length
-        ? stockRes.rows.map(r =>
-            `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
-          ).join('\n')
-        : '_No vouchers in stock yet_';
+        const lines = stockRes.rows.length
+          ? stockRes.rows.map(r =>
+              `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
+            ).join('\n')
+          : '_No vouchers in stock yet_';
 
-      return ctx.replyWithMarkdown(
+        await ctx.replyWithMarkdown(
 `✅ *Sync Complete*
 
 New vouchers added: ${result.totalInserted}
@@ -535,14 +535,43 @@ Status updated:     ${result.totalUpdated}
 
 *Current Stock:*
 ${lines}`
-      );
+        );
 
-    } catch (err) {
-      logger.error('Manual sync failed', { tenantId: tid, error: err.message });
-      return ctx.reply(`❌ Sync failed: ${err.message}`);
-    }
+      } catch (err) {
+        logger.error('Background sync failed', { tenantId: tid, error: err.message });
+        await ctx.reply(`❌ Sync failed: ${err.message}`);
+      }
+    });
   }));
 
+  bot.command('stockreport', adminOnly(tid, async (ctx) => {
+    const res = await db.query(
+      `SELECT plan,
+              COUNT(*) FILTER (WHERE status='unused') as unused,
+              COUNT(*) FILTER (WHERE status='used')   as used,
+              COUNT(*) as total
+       FROM voucher_stock
+       WHERE tenant_id=$1
+       GROUP BY plan ORDER BY plan`,
+      [tid]
+    );
+
+    if (!res.rows.length) {
+      return ctx.reply('No vouchers in stock. Use /syncnow to pull from Omada.');
+    }
+
+    const lines = res.rows.map(r =>
+      `• *${r.plan}*: ${r.unused} unused / ${r.used} used / ${r.total} total`
+    ).join('\n');
+
+    return ctx.replyWithMarkdown(
+`📦 *Voucher Stock Report*
+
+${lines}
+
+_Use /syncnow to refresh stock from Omada_`
+    );
+  }));
   bot.command('stock', adminOnly(tid, async (ctx) => {
     const res = await db.query(
       'SELECT COALESCE(SUM(total_gb),0) as sold FROM users WHERE tenant_id=$1',

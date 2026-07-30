@@ -243,12 +243,36 @@ class OmadaProvider {
         totalCount:  group.totalCount,
       });
 
+      // Check current DB stock — only sync if below 50
+      const stockCheck = await db.query(
+        `SELECT COUNT(*) as count FROM voucher_stock
+         WHERE tenant_id=$1 AND plan=$2 AND status='unused'`,
+        [this.tenant.tenant_id, plan.label]
+      );
+      const currentStock = parseInt(stockCheck.rows[0].count);
+
+      if (currentStock >= 50) {
+        logger.debug('Stock sufficient, skipping sync', {
+          tenantId:     this.tenant.tenant_id,
+          plan:         plan.label,
+          currentStock,
+        });
+        continue;
+      }
+
+      logger.info('Stock low, pulling from Omada', {
+        tenantId:     this.tenant.tenant_id,
+        plan:         plan.label,
+        currentStock,
+        target:       100,
+      });
+
       try {
         let page     = 1;
         let hasMore  = true;
 
         while (hasMore) {
-          const vouchers = await this.getVouchersForGroup(group.id, page, 500);
+          const vouchers = await this.getVouchersForGroup(group.id, page, 100);
 
           if (!vouchers.length) {
             hasMore = false;
