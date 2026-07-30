@@ -161,6 +161,12 @@ cron.schedule('*/15 * * * *', async () => {
   }
 });
 
+masterApp.get('/myip', (req, res) => {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+      || req.socket.remoteAddress;
+    res.json({ ip });
+  });
+
 // ── Keep Render awake ──────────────────────────
 if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {
   setInterval(() => {
