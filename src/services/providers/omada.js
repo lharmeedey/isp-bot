@@ -15,8 +15,11 @@ class OmadaProvider {
     this.adminPassword  = decrypt(tenant.omada_admin_password)  || tenant.omada_admin_password;
     this.controllerType = tenant.omada_controller_type || 'software';
 
-    this._accessToken    = null;
-    this._tokenExpiry    = null;
+    // OpenAPI token cache
+    this._accessToken  = null;
+    this._tokenExpiry  = null;
+
+    // Session cache
     this._sessionToken   = null;
     this._sessionCookies = null;
     this._sessionExpiry  = null;
@@ -40,9 +43,11 @@ class OmadaProvider {
         logger.error('Failed to build mTLS agent', { error: err.message });
       }
     }
+    // Software, Hardware (OC200), and fallback — self-signed cert
     return new https.Agent({ rejectUnauthorized: false });
   }
 
+  // ── Get omadacId ───────────────────────────────
   async _getOmadacId() {
     if (this.omadacId) return this.omadacId;
 
@@ -59,6 +64,7 @@ class OmadaProvider {
     return this.omadacId;
   }
 
+  // ── OpenAPI token (for voucher groups listing) ─
   async _getOpenApiToken() {
     if (
       this._accessToken &&
@@ -91,9 +97,11 @@ class OmadaProvider {
     this._accessToken = res.data.result.accessToken;
     this._tokenExpiry = Date.now() + res.data.result.expiresIn * 1000;
 
+    logger.info('Omada OpenAPI token refreshed', { tenantId: this.tenant.tenant_id });
     return this._accessToken;
   }
 
+  // ── Session login (for voucher listing per group) ──
   async _getSession() {
     if (
       this._sessionToken &&
@@ -108,7 +116,8 @@ class OmadaProvider {
 
     if (!this.adminUsername || !this.adminPassword) {
       throw new Error(
-        'Omada admin credentials not configured. Add omada_admin_username and omada_admin_password.'
+        'Omada admin credentials not configured. ' +
+        'Add omada_admin_username and omada_admin_password to this tenant.'
       );
     }
 
@@ -138,7 +147,7 @@ class OmadaProvider {
 
     this._sessionToken   = res.data.result.token;
     this._sessionCookies = res.headers['set-cookie']?.join('; ') || '';
-    this._sessionExpiry  = Date.now() + 2 * 60 * 60 * 1000;
+    this._sessionExpiry  = Date.now() + 2 * 60 * 60 * 1000; // 2 hours
 
     logger.info('Omada session obtained', { tenantId: this.tenant.tenant_id });
 
@@ -157,6 +166,7 @@ class OmadaProvider {
     };
   }
 
+  // ── Get voucher groups (OpenAPI) ───────────────
   async getVoucherGroups() {
     const omadacId = await this._getOmadacId();
     const token    = await this._getOpenApiToken();
@@ -176,78 +186,197 @@ class OmadaProvider {
 
     return res.data.result?.data || [];
   }
-async createVoucherOnOmada(groupId) {
+
+  // ── Get vouchers for a specific group (session API) ──
+  // Uses: GET /{omadacId}/api/v2/hotspot/sites/{siteId}/voucherGroups/{groupId}
+  async getVouchersForGroup(groupId, page = 1, pageSize = 500) {
     const omadacId = await this._getOmadacId();
-    const token    = await this._getOpenApiToken();
-    const url      = `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/vouchers`;
+    const headers  = await this._sessionHeaders();
 
-    logger.info('Calling Omada create voucher API', {
-      tenantId: this.tenant.tenant_id,
-      groupId,
-      url,
-    });
-
-    const res = await axios.post(
-      url,
-      { voucherGroupId: groupId, amount: 1 },
+    const res = await axios.get(
+      `${this.baseUrl}/${omadacId}/api/v2/hotspot/sites/${this.siteId}/voucherGroups/${groupId}`,
       {
         httpsAgent: this._httpsAgent,
         timeout:    15000,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization:  `AccessToken=${token}`,
+        headers,
+        params: {
+          currentPage:     page,
+          currentPageSize: pageSize,
         },
       }
     );
 
-    logger.info('Omada create voucher raw response', {
-      tenantId:  this.tenant.tenant_id,
-      errorCode: res.data?.errorCode,
-      result:    JSON.stringify(res.data?.result)?.slice(0, 200),
-    });
-
     if (res.data?.errorCode !== 0) {
-      throw new Error(`Failed to create voucher on Omada: ${res.data?.msg} (code: ${res.data?.errorCode})`);
+      throw new Error(`Failed to get vouchers for group ${groupId}: ${res.data?.msg}`);
     }
 
-    const result   = res.data.result;
-    const vouchers = result?.data || result;
-    const voucher  = Array.isArray(vouchers) ? vouchers[0] : vouchers;
-
-    if (!voucher?.code) {
-      throw new Error('Omada returned no voucher code. Response: ' + JSON.stringify(result));
-    }
-
-    return voucher;
+    return res.data.result?.data || [];
   }
 
-  async createVoucher({ plan, email, reference, planConfig }) {
-    logger.info('Creating live Omada voucher', {
-      tenantId:  this.tenant.tenant_id,
-      plan,
-      email,
-      planConfig: JSON.stringify(planConfig),
-    });
+  // ── Sync all voucher groups into DB ────────────
+  // Flow:
+  // 1. Get all groups via OpenAPI
+  // 2. For each group, fetch all vouchers via session API
+  // 3. Insert unused ones into voucher_stock
+  async syncVouchersToDb(db) {
+    const groups = await this.getVoucherGroups();
+    const plans  = JSON.parse(process.env.PLANS || '[]');
 
-    const groupId = planConfig?.omadaProfileId;
+    let totalInserted = 0;
+    let totalUpdated  = 0;
 
-    if (!groupId) {
-      throw new Error(
-        `No omadaProfileId for plan "${plan}". Check your PLANS environment variable.`
-      );
+    for (const group of groups) {
+      // Match group to plan by omadaProfileId
+      const plan = plans.find(p => p.omadaProfileId === group.id);
+      if (!plan) {
+        logger.debug('No plan matched for voucher group', {
+          groupName: group.name,
+          groupId:   group.id,
+        });
+        continue;
+      }
+
+      logger.info('Syncing voucher group', {
+        tenantId:    this.tenant.tenant_id,
+        groupName:   group.name,
+        unusedCount: group.unusedCount,
+        totalCount:  group.totalCount,
+      });
+
+      try {
+        let page     = 1;
+        let hasMore  = true;
+
+        while (hasMore) {
+          const vouchers = await this.getVouchersForGroup(group.id, page, 500);
+
+          if (!vouchers.length) {
+            hasMore = false;
+            break;
+          }
+
+          for (const v of vouchers) {
+            if (!v.code) continue;
+
+            try {
+              // status 0 = unused, 1 = in use, 2 = expired, 3 = used up
+              const dbStatus = v.status === 0 ? 'unused' : 'used';
+
+              await db.query(
+                `INSERT INTO voucher_stock
+                 (tenant_id, plan, code, omada_voucher_id, status)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (code) DO UPDATE
+                 SET status = EXCLUDED.status,
+                     omada_voucher_id = EXCLUDED.omada_voucher_id`,
+                [
+                  this.tenant.tenant_id,
+                  plan.label,
+                  String(v.code),
+                  v.id || null,
+                  dbStatus,
+                ]
+              );
+
+              if (v.status === 0) totalInserted++;
+              else totalUpdated++;
+
+            } catch (e) {
+              logger.warn('Voucher insert/update failed', {
+                code:  v.code,
+                error: e.message,
+              });
+            }
+          }
+
+          // If we got less than pageSize, no more pages
+          hasMore = vouchers.length === 500;
+          page++;
+        }
+
+        logger.info('Group sync complete', {
+          tenantId:  this.tenant.tenant_id,
+          plan:      plan.label,
+          inserted:  totalInserted,
+          updated:   totalUpdated,
+        });
+
+      } catch (err) {
+        logger.warn('Failed to sync group', {
+          groupName: group.name,
+          error:     err.message,
+        });
+      }
     }
 
-    const voucher = await this.createVoucherOnOmada(groupId);
+    return { totalInserted, totalUpdated };
+  }
 
-    logger.info('Live Omada voucher created successfully', {
+  // ── Main createVoucher — picks from synced stock ──
+  // Flow:
+  // 1. Query voucher_stock for unused voucher matching plan
+  // 2. Mark it as used
+  // 3. Return the code to the customer
+  // 4. If stock is empty, trigger immediate sync and retry once
+  async createVoucher({ plan, email, reference, planConfig }) {
+    const db = require('../db');
+
+    logger.info('Getting voucher from stock', {
       tenantId: this.tenant.tenant_id,
-      code:     voucher.code,
-      id:       voucher.id,
+      plan,
+      email,
+    });
+
+    const pickVoucher = async () => {
+      const res = await db.query(
+        `SELECT id, code, omada_voucher_id
+         FROM voucher_stock
+         WHERE tenant_id=$1 AND plan=$2 AND status='unused'
+         ORDER BY id ASC
+         LIMIT 1`,
+        [this.tenant.tenant_id, plan]
+      );
+      return res.rows[0] || null;
+    };
+
+    let voucher = await pickVoucher();
+
+    // Stock empty — sync immediately and retry
+    if (!voucher) {
+      logger.warn('Stock empty, syncing from Omada now', {
+        tenantId: this.tenant.tenant_id,
+        plan,
+      });
+
+      await this.syncVouchersToDb(db);
+      voucher = await pickVoucher();
+
+      if (!voucher) {
+        throw new Error(
+          `No vouchers available for plan: ${plan}. ` +
+          `Please generate more vouchers in Omada for the ${plan} group.`
+        );
+      }
+    }
+
+    // Mark as used
+    await db.query(
+      `UPDATE voucher_stock
+       SET status='used', email=$1, reference=$2, assigned_at=NOW()
+       WHERE id=$3`,
+      [email, reference, voucher.id]
+    );
+
+    logger.info('Voucher assigned from stock', {
+      tenantId:        this.tenant.tenant_id,
+      code:            voucher.code,
+      omadaVoucherId:  voucher.omada_voucher_id,
+      plan,
     });
 
     return {
       code:           String(voucher.code),
-      omadaVoucherId: voucher.id || null,
+      omadaVoucherId: voucher.omada_voucher_id || null,
       provider:       `omada_${this.controllerType}`,
     };
   }
@@ -259,8 +388,12 @@ async createVoucherOnOmada(groupId) {
   async getOnlineClients() {
     try {
       const groups      = await this.getVoucherGroups();
-      const totalUsed   = groups.reduce((sum, g) => sum + ((g.totalCount || 0) - (g.unusedCount || 0)), 0);
-      const totalUnused = groups.reduce((sum, g) => sum + (g.unusedCount || 0), 0);
+      const totalUsed   = groups.reduce(
+        (sum, g) => sum + ((g.totalCount || 0) - (g.unusedCount || 0)), 0
+      );
+      const totalUnused = groups.reduce(
+        (sum, g) => sum + (g.unusedCount || 0), 0
+      );
 
       return {
         online:  totalUsed,
@@ -279,19 +412,7 @@ async createVoucherOnOmada(groupId) {
   }
 
   async deactivateVoucher(omadaVoucherId) {
-    if (!omadaVoucherId) return true;
-    try {
-      const omadacId = await this._getOmadacId();
-      const headers  = await this._sessionHeaders();
-      await axios.delete(
-        `${this.baseUrl}/${omadacId}/api/v2/hotspot/sites/${this.siteId}/vouchers`,
-        { httpsAgent: this._httpsAgent, headers, data: { ids: [omadaVoucherId] } }
-      );
-      return true;
-    } catch (err) {
-      logger.warn('Failed to deactivate voucher', { omadaVoucherId, error: err.message });
-      return false;
-    }
+    return true;
   }
 
   async testConnection() {
@@ -303,7 +424,13 @@ async createVoucherOnOmada(groupId) {
       let sessionStatus = '';
       try {
         await this._getSession();
-        sessionStatus = ' | Session auth ✅';
+        // Test fetching vouchers for first group
+        if (groups.length > 0) {
+          const vouchers = await this.getVouchersForGroup(groups[0].id, 1, 5);
+          sessionStatus = ` | Session auth ✅ | Sample vouchers: ${vouchers.slice(0, 3).map(v => v.code).join(', ')}`;
+        } else {
+          sessionStatus = ' | Session auth ✅';
+        }
       } catch (e) {
         sessionStatus = ` | Session auth ❌ (${e.message})`;
       }

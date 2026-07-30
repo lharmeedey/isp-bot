@@ -105,6 +105,8 @@ async function migrate() {
   
   ];
 
+  
+
   for (const col of columns) {
     const exists = await db.query(`
       SELECT column_name FROM information_schema.columns
@@ -127,6 +129,24 @@ async function migrate() {
     await db.query(`ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'unused'`);
     await db.query(`ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_at TIMESTAMP`);
     console.log('✅ Added omada columns to vouchers');
+  }
+
+  // Add omada_status and last_synced to voucher_stock if missing
+  const stockCols = [
+    { name: 'omada_status', def: 'INTEGER' },
+    { name: 'last_synced', def: 'TIMESTAMP' },
+  ];
+
+  for (const col of stockCols) {
+    const exists = await db.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='voucher_stock' AND column_name=$1
+    `, [col.name]);
+
+    if (!exists.rows.length) {
+      await db.query(`ALTER TABLE voucher_stock ADD COLUMN ${col.name} ${col.def}`);
+      console.log(`✅ Added column voucher_stock.${col.name}`);
+    }
   }
 
   console.log('✅ Migration complete');

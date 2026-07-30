@@ -161,6 +161,35 @@ cron.schedule('*/15 * * * *', async () => {
   }
 });
 
+// ── Sync Omada vouchers every hour ────────────
+cron.schedule('0 * * * *', async () => {
+  logger.debug('Running hourly Omada voucher sync');
+  const bots = tenantManager.getActiveTenants();
+  const { getProvider } = require('./services/providers');
+
+  for (const [tenantId, { tenant }] of bots) {
+    try {
+      const tenantRes = await db.query(
+        'SELECT * FROM tenants WHERE tenant_id=$1',
+        [tenantId]
+      );
+      const freshTenant = tenantRes.rows[0];
+
+      if (!freshTenant || freshTenant.network_provider !== 'omada') continue;
+
+      const provider = getProvider(freshTenant);
+      const result = await provider.syncVouchersToDb(db);
+
+      logger.info('Hourly Omada sync complete', {
+        tenantId,
+        inserted: result.totalInserted,
+        updated: result.totalUpdated,
+      });
+    } catch (err) {
+      logger.error('Omada sync error', { tenantId, error: err.message });
+    }
+  }
+});
 
 // ── Keep Render awake ──────────────────────────
 if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {

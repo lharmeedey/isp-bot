@@ -494,8 +494,7 @@ Revenue:   *${naira(res.rows[0].total)}*`
     );
   }));
 
-
-  bot.command('syncnow', adminOnly(tid, async (ctx) => {
+bot.command('syncnow', adminOnly(tid, async (ctx) => {
     await ctx.reply('⏳ Syncing vouchers from Omada...');
 
     try {
@@ -512,7 +511,6 @@ Revenue:   *${naira(res.rows[0].total)}*`
       const provider = getProvider(freshTenant);
       const result   = await provider.syncVouchersToDb(db);
 
-      // Show current stock after sync
       const stockRes = await db.query(
         `SELECT plan,
                 COUNT(*) FILTER (WHERE status='unused') as unused,
@@ -523,17 +521,20 @@ Revenue:   *${naira(res.rows[0].total)}*`
         [tid]
       );
 
-      const lines = stockRes.rows.map(r =>
-        `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
-      ).join('\n');
+      const lines = stockRes.rows.length
+        ? stockRes.rows.map(r =>
+            `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
+          ).join('\n')
+        : '_No vouchers in stock yet_';
 
       return ctx.replyWithMarkdown(
 `✅ *Sync Complete*
 
 New vouchers added: ${result.totalInserted}
+Status updated:     ${result.totalUpdated}
 
 *Current Stock:*
-${lines || '_No vouchers in stock_'}`
+${lines}`
       );
 
     } catch (err) {

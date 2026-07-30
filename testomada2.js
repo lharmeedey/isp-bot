@@ -17,32 +17,11 @@ async function login() {
     { username: USERNAME, password: PASSWORD },
     { httpsAgent: agent, headers: { 'Content-Type': 'application/json' } }
   );
-  if (res.data.errorCode !== 0) throw new Error('Login failed: ' + res.data.msg);
+  if (res.data.errorCode !== 0) throw new Error('Login failed');
   return {
     token:   res.data.result.token,
     cookies: res.headers['set-cookie']?.join('; ') || '',
   };
-}
-
-async function tryCreate(headers, body, label) {
-  console.log(`\nTrying: ${label}`);
-  console.log('Body:', JSON.stringify(body));
-  try {
-    const res = await axios.post(
-      `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
-      body,
-      { httpsAgent: agent, timeout: 10000, headers }
-    );
-    console.log('errorCode:', res.data.errorCode);
-    console.log('Response:', JSON.stringify(res.data, null, 2));
-    if (res.data.errorCode === 0) {
-      console.log('\n✅ WORKING BODY FOUND:', JSON.stringify(body));
-      return true;
-    }
-  } catch (e) {
-    console.log('❌', e.response?.status, JSON.stringify(e.response?.data));
-  }
-  return false;
 }
 
 async function main() {
@@ -55,26 +34,25 @@ async function main() {
     Cookie:         cookies,
   };
 
-  const bodies = [
-    { voucherGroupId: GROUP_ID, amount: 1 },
-    { voucherGroupId: GROUP_ID, count: 1 },
-    { voucherGroupId: GROUP_ID, num: 1 },
-    { voucherGroupId: GROUP_ID, number: 1 },
-    { voucherGroupId: GROUP_ID, quantity: 1 },
-    { groupId: GROUP_ID, amount: 1 },
-    { groupId: GROUP_ID, count: 1 },
-    { id: GROUP_ID, amount: 1 },
-    { voucherGroupId: GROUP_ID, amount: 1, siteId: SITE_ID },
-    { voucherGroupId: GROUP_ID, amount: 1, omadacId: OMADAC_ID },
-    { voucherGroupId: GROUP_ID },
-  ];
+  console.log('Fetching vouchers for group...');
+  const res = await axios.get(
+    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/voucherGroups/${GROUP_ID}`,
+    {
+      httpsAgent: agent,
+      timeout:    15000,
+      headers,
+      params: {
+        currentPage:     1,
+        currentPageSize: 10,
+      },
+    }
+  );
 
-  for (const [i, body] of bodies.entries()) {
-    const success = await tryCreate(headers, body, `attempt ${i + 1}`);
-    if (success) return;
-  }
-
-  console.log('\n❌ No working body format found');
+  console.log('errorCode:', res.data.errorCode);
+  console.log('Full response:', JSON.stringify(res.data, null, 2));
 }
 
-main().catch(e => console.error('Fatal:', e.message));
+main().catch(e => {
+  console.error('Error:', e.response?.status);
+  console.error('Data:', JSON.stringify(e.response?.data || e.message).slice(0, 500));
+});
