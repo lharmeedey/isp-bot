@@ -15,21 +15,39 @@ async function login() {
   const res = await axios.post(
     `${BASE_URL}/${OMADAC_ID}/api/v2/login`,
     { username: USERNAME, password: PASSWORD },
-    {
-      httpsAgent: agent,
-      headers:    { 'Content-Type': 'application/json' },
-    }
+    { httpsAgent: agent, headers: { 'Content-Type': 'application/json' } }
   );
-  if (res.data.errorCode !== 0) throw new Error('Login failed');
-  const token   = res.data.result.token;
-  const cookies = res.headers['set-cookie']?.join('; ') || '';
-  return { token, cookies };
+  if (res.data.errorCode !== 0) throw new Error('Login failed: ' + res.data.msg);
+  return {
+    token:   res.data.result.token,
+    cookies: res.headers['set-cookie']?.join('; ') || '',
+  };
+}
+
+async function tryCreate(headers, body, label) {
+  console.log(`\nTrying: ${label}`);
+  console.log('Body:', JSON.stringify(body));
+  try {
+    const res = await axios.post(
+      `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
+      body,
+      { httpsAgent: agent, timeout: 10000, headers }
+    );
+    console.log('errorCode:', res.data.errorCode);
+    console.log('Response:', JSON.stringify(res.data, null, 2));
+    if (res.data.errorCode === 0) {
+      console.log('\n✅ WORKING BODY FOUND:', JSON.stringify(body));
+      return true;
+    }
+  } catch (e) {
+    console.log('❌', e.response?.status, JSON.stringify(e.response?.data));
+  }
+  return false;
 }
 
 async function main() {
-  console.log('1. Logging in...');
   const { token, cookies } = await login();
-  console.log('✅ Token:', token);
+  console.log('✅ Logged in\n');
 
   const headers = {
     'Content-Type': 'application/json',
@@ -37,47 +55,26 @@ async function main() {
     Cookie:         cookies,
   };
 
-  // List vouchers
-  console.log('\n2. Listing vouchers...');
-  const listRes = await axios.get(
-    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
-    {
-      httpsAgent: agent,
-      headers,
-      params: { page: 1, pageSize: 5, currentPage: 1, currentPageSize: 5 },
-    }
-  );
-  console.log('LIST:', JSON.stringify(listRes.data, null, 2));
-
-  // Create voucher with amount
-  console.log('\n3. Creating voucher (amount)...');
-  const c1 = await axios.post(
-    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
+  const bodies = [
     { voucherGroupId: GROUP_ID, amount: 1 },
-    { httpsAgent: agent, headers }
-  );
-  console.log('CREATE 1:', JSON.stringify(c1.data, null, 2));
-
-  // Create voucher with count
-  console.log('\n4. Creating voucher (count)...');
-  const c2 = await axios.post(
-    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
     { voucherGroupId: GROUP_ID, count: 1 },
-    { httpsAgent: agent, headers }
-  );
-  console.log('CREATE 2:', JSON.stringify(c2.data, null, 2));
-
-  // Create voucher with num
-  console.log('\n5. Creating voucher (num)...');
-  const c3 = await axios.post(
-    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
     { voucherGroupId: GROUP_ID, num: 1 },
-    { httpsAgent: agent, headers }
-  );
-  console.log('CREATE 3:', JSON.stringify(c3.data, null, 2));
+    { voucherGroupId: GROUP_ID, number: 1 },
+    { voucherGroupId: GROUP_ID, quantity: 1 },
+    { groupId: GROUP_ID, amount: 1 },
+    { groupId: GROUP_ID, count: 1 },
+    { id: GROUP_ID, amount: 1 },
+    { voucherGroupId: GROUP_ID, amount: 1, siteId: SITE_ID },
+    { voucherGroupId: GROUP_ID, amount: 1, omadacId: OMADAC_ID },
+    { voucherGroupId: GROUP_ID },
+  ];
+
+  for (const [i, body] of bodies.entries()) {
+    const success = await tryCreate(headers, body, `attempt ${i + 1}`);
+    if (success) return;
+  }
+
+  console.log('\n❌ No working body format found');
 }
 
-main().catch(e => {
-  console.error('Error:', e.response?.status);
-  console.error('Data:', JSON.stringify(e.response?.data || e.message).slice(0, 1000));
-});
+main().catch(e => console.error('Fatal:', e.message));

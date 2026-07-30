@@ -176,24 +176,27 @@ class OmadaProvider {
 
     return res.data.result?.data || [];
   }
-
-  async createVoucherOnOmada(groupId) {
+async createVoucherOnOmada(groupId) {
     const omadacId = await this._getOmadacId();
-    const headers  = await this._sessionHeaders();
+    const token    = await this._getOpenApiToken();
+    const url      = `${this.baseUrl}/openapi/v1/${omadacId}/sites/${this.siteId}/hotspot/vouchers`;
 
     logger.info('Calling Omada create voucher API', {
       tenantId: this.tenant.tenant_id,
       groupId,
-      url: `${this.baseUrl}/${omadacId}/api/v2/hotspot/sites/${this.siteId}/vouchers`,
+      url,
     });
 
     const res = await axios.post(
-      `${this.baseUrl}/${omadacId}/api/v2/hotspot/sites/${this.siteId}/vouchers`,
+      url,
       { voucherGroupId: groupId, amount: 1 },
       {
         httpsAgent: this._httpsAgent,
         timeout:    15000,
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization:  `AccessToken=${token}`,
+        },
       }
     );
 

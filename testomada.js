@@ -1,92 +1,118 @@
-const axios = require('axios');
-const https = require('https');
+const axios  = require('axios');
+const https  = require('https');
 
 const BASE_URL      = 'https://16.171.67.192:8043';
 const OMADAC_ID     = 'ae3846afd47b384710ca7c9cf4ef8011';
 const SITE_ID       = '6a6393445c7bdd073c22a2ac';
+const GROUP_ID      = '6a64e9565c7bdd073c22b90e';
 const CLIENT_ID     = '303276c0206c48348435d0b978f1e528';
 const CLIENT_SECRET = '11eac7ad5de24e74a74c1039db851e04';
+const USERNAME      = 'saint.xv18@gmail.com';
+const PASSWORD      = 'Callerwoley@18';
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-async function getToken() {
+async function getOpenApiToken() {
   const res = await axios.post(
     `${BASE_URL}/openapi/authorize/token?grant_type=client_credentials`,
     { omadacId: OMADAC_ID, client_id: CLIENT_ID, client_secret: CLIENT_SECRET },
     { httpsAgent: agent, headers: { 'Content-Type': 'application/json' } }
   );
-  if (res.data.errorCode !== 0) throw new Error('Token failed');
+  if (res.data.errorCode !== 0) throw new Error('OpenAPI token failed');
   return res.data.result.accessToken;
 }
 
-async function tryGet(token, path) {
-  process.stdout.write(`GET ${path}\n`);
-  try {
-    const res = await axios.get(`${BASE_URL}${path}`, {
-      httpsAgent: agent,
-      timeout:    8000,
-      headers:    { Authorization: `AccessToken=${token}` },
-    });
-    console.log('Response:', JSON.stringify(res.data, null, 2));
-    return res.data;
-  } catch (e) {
-    console.log(`❌ ${e.response?.status}: ${JSON.stringify(e.response?.data)}`);
-  }
+async function login() {
+  const res = await axios.post(
+    `${BASE_URL}/${OMADAC_ID}/api/v2/login`,
+    { username: USERNAME, password: PASSWORD },
+    { httpsAgent: agent, headers: { 'Content-Type': 'application/json' } }
+  );
+  if (res.data.errorCode !== 0) throw new Error('Login failed');
+  return {
+    token:   res.data.result.token,
+    cookies: res.headers['set-cookie']?.join('; ') || '',
+  };
 }
 
-async function tryPost(token, path, body) {
-  process.stdout.write(`POST ${path}\n`);
+async function tryCreate(headers, body, url, label) {
+  console.log(`\n${label}`);
+  console.log('URL:', url);
+  console.log('Body:', JSON.stringify(body));
   try {
-    const res = await axios.post(`${BASE_URL}${path}`, body, {
+    const res = await axios.post(url, body, {
       httpsAgent: agent,
-      timeout:    8000,
-      headers: {
-        Authorization:  `AccessToken=${token}`,
-        'Content-Type': 'application/json',
-      },
+      timeout:    10000,
+      headers,
     });
+    console.log('errorCode:', res.data.errorCode);
     console.log('Response:', JSON.stringify(res.data, null, 2));
-    return res.data;
+    if (res.data.errorCode === 0) {
+      console.log('\n✅ SUCCESS:', JSON.stringify(body));
+      return true;
+    }
   } catch (e) {
-    console.log(`❌ ${e.response?.status}: ${JSON.stringify(e.response?.data)}`);
+    console.log('❌', e.response?.status, JSON.stringify(e.response?.data));
   }
+  return false;
 }
 
 async function main() {
-  const token = await getToken();
-  console.log('✅ Token OK\n');
+  const openApiToken          = await getOpenApiToken();
+  const { token, cookies }    = await login();
+  console.log('✅ Both tokens obtained\n');
 
-  // 1. Get all voucher groups with full details
-  await tryGet(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups?page=1&pageSize=10`
+  const openApiHeaders = {
+    'Content-Type': 'application/json',
+    Authorization:  `AccessToken=${openApiToken}`,
+  };
+
+  const sessionHeaders = {
+    'Content-Type': 'application/json',
+    'Csrf-Token':   token,
+    Cookie:         cookies,
+  };
+
+  const body = { voucherGroupId: GROUP_ID, amount: 1 };
+
+  // Test 1 — OpenAPI token on internal URL
+  await tryCreate(
+    openApiHeaders,
+    body,
+    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
+    'OpenAPI token on internal URL'
   );
 
-  // 2. Try printing vouchers (some Omada versions expose this)
-  await tryPost(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/vouchers/print`,
-    { voucherGroupId: '6a64e9565c7bdd073c22b90e', amount: 1 }
+  // Test 2 — Session token on OpenAPI URL
+  await tryCreate(
+    sessionHeaders,
+    body,
+    `${BASE_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/vouchers`,
+    'Session token on OpenAPI URL'
   );
 
-  // 3. Try batch endpoint
-  await tryPost(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/vouchers/batch`,
-    { voucherGroupId: '6a64e9565c7bdd073c22b90e', amount: 1 }
+  // Test 3 — OpenAPI token on OpenAPI URL (original working test)
+  await tryCreate(
+    openApiHeaders,
+    body,
+    `${BASE_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/vouchers`,
+    'OpenAPI token on OpenAPI URL'
   );
 
-  // 4. Try generate endpoint
-  await tryPost(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/vouchers/generate`,
-    { voucherGroupId: '6a64e9565c7bdd073c22b90e', amount: 1 }
+  // Test 4 — Both tokens combined
+  await tryCreate(
+    { ...openApiHeaders, 'Csrf-Token': token, Cookie: cookies },
+    body,
+    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
+    'Combined tokens on internal URL'
   );
 
-  // 5. Try with GET on voucher-groups including vouchers
-  await tryGet(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups?page=1&pageSize=10&withVouchers=true`
-  );
-
-  // 6. Try different voucher listing with groupId as query param
-  await tryGet(token,
-    `/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups/6a64e9565c7bdd073c22b90e/vouchers?page=1&pageSize=10&status=unused`
+  // Test 5 — Session on internal with different body
+  await tryCreate(
+    sessionHeaders,
+    { voucherGroupId: GROUP_ID, amount: 1, currentPage: 1, currentPageSize: 10 },
+    `${BASE_URL}/${OMADAC_ID}/api/v2/hotspot/sites/${SITE_ID}/vouchers`,
+    'Session on internal with pagination'
   );
 }
 
