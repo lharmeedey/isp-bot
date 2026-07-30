@@ -218,36 +218,6 @@ class OmadaProvider {
     return voucher;
   }
 
-  resolveVoucherGroupId(planConfig, groups, plan) {
-    const candidateKeys = [
-      'omadaProfileId',
-      'omadaVoucherGroupId',
-      'voucherGroupId',
-      'profileId',
-      'omada_profile_id',
-    ];
-
-    for (const key of candidateKeys) {
-      const value = planConfig?.[key];
-      if (value) return String(value);
-    }
-
-    const planName = String(plan || planConfig?.label || '').toLowerCase();
-    for (const group of groups || []) {
-      const haystacks = [group.name, group.groupName, group.label, group.id];
-      const match = haystacks.some((entry) =>
-        String(entry || '').toLowerCase().includes(planName)
-      );
-      if (match) return String(group.id);
-    }
-
-    if ((groups || []).length === 1) {
-      return String(groups[0].id);
-    }
-
-    return null;
-  }
-
   async createVoucher({ plan, email, reference, planConfig }) {
     logger.info('Creating live Omada voucher', {
       tenantId:  this.tenant.tenant_id,
@@ -256,25 +226,11 @@ class OmadaProvider {
       planConfig: JSON.stringify(planConfig),
     });
 
-    let groups = [];
-    try {
-      groups = await this.getVoucherGroups();
-      logger.info('Omada voucher groups fetched', {
-        tenantId: this.tenant.tenant_id,
-        count: groups.length,
-      });
-    } catch (err) {
-      logger.warn('Could not fetch Omada voucher groups, continuing with config fallback', {
-        tenantId: this.tenant.tenant_id,
-        error: err.message,
-      });
-    }
-
-    const groupId = this.resolveVoucherGroupId(planConfig, groups, plan);
+    const groupId = planConfig?.omadaProfileId;
 
     if (!groupId) {
       throw new Error(
-        `No Omada voucher group could be resolved for plan "${plan}". Add omadaProfileId to the plan config or make sure the Omada controller exposes voucher groups.`
+        `No omadaProfileId for plan "${plan}". Check your PLANS environment variable.`
       );
     }
 
@@ -284,7 +240,6 @@ class OmadaProvider {
       tenantId: this.tenant.tenant_id,
       code:     voucher.code,
       id:       voucher.id,
-      groupId,
     });
 
     return {
