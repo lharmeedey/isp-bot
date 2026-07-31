@@ -654,6 +654,127 @@ _Tenant has been notified._`
     return ctx.reply(`❌ Failed to create tenant: ${err.message}`);
   }
 }
+
+
+async function managePlans(ctx) {
+  const parts    = ctx.message.text.split(' ');
+  const tenantId = parts[1];
+
+  if (!tenantId) {
+    return ctx.reply('Usage: /manageplans tenant_id');
+  }
+
+  const res = await db.query(
+    'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
+  );
+  if (!res.rows.length) return ctx.reply('Tenant not found.');
+
+  const tenant = res.rows[0];
+
+  // Check if tenant has custom plans
+  const plansRes = await db.query(
+    'SELECT * FROM tenant_plans WHERE tenant_id=$1 AND active=true ORDER BY plan_id',
+    [tenantId]
+  );
+
+  const currentPlans = plansRes.rows.length
+    ? plansRes.rows
+    : JSON.parse(process.env.PLANS || '[]').map(p => ({ ...p, omada_profile_id: p.omadaProfileId }));
+
+  const lines = currentPlans.map(p =>
+    `• *${p.label}*: ₦${Number(p.price).toLocaleString('en-NG')} | ${p.gb}GB | ${p.validity}`
+  ).join('\n');
+
+  return ctx.replyWithMarkdown(
+`📦 *Plans for ${tenant.name}*
+
+${lines}
+
+To update a plan use:
+/setplan ${tenantId} LABEL PRICE GB VALIDITY OMADA_PROFILE_ID
+
+Example:
+/setplan ${tenantId} 5GB 1500 5 "7 days" 6a64e90e5c7bdd073c22b522
+
+To reset to global plans:
+/resetplans ${tenantId}`
+  );
+}
+
+async function setPlan(ctx) {
+  const parts = ctx.message.text.split(' ');
+
+  if (parts.length < 7) {
+    return ctx.reply(
+      'Usage: /setplan tenant_id LABEL PRICE GB VALIDITY OMADA_PROFILE_ID\n\n' +
+      'Example:\n/setplan tenant_123 5GB 1500 5 "7 days" 6a64e90e5c7bdd073c22b522'
+    );
+  }
+
+  const tenantId       = parts[1];
+  const label          = parts[2];
+  const price          = parseFloat(parts[3]);
+  const gb             = parseFloat(parts[4]);
+  const validity       = parts[5].replace(/"/g, '');
+  const omadaProfileId = parts[6];
+
+  if (isNaN(price) || isNaN(gb)) {
+    return ctx.reply('Invalid price or GB value.');
+  }
+
+  const tenantRes = await db.query(
+    'SELECT * FROM tenants WHERE tenant_id=$1', [tenantId]
+  );
+  if (!tenantRes.rows.length) return ctx.reply('Tenant not found.');
+
+  // Get plan_id from global plans
+  const globalPlans = JSON.parse(process.env.PLANS || '[]');
+  const globalPlan  = globalPlans.find(p => p.label === label);
+  const planId      = globalPlan?.id || 99;
+
+  await db.query(
+    `INSERT INTO tenant_plans
+     (tenant_id, plan_id, label, price, gb, validity, omada_profile_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (tenant_id, label)
+     DO UPDATE SET price=$4, gb=$5, validity=$6, omada_profile_id=$7, active=true`,
+    [tenantId, planId, label, price, gb, validity, omadaProfileId]
+  );
+
+  logger.info('Tenant plan updated', { tenantId, label, price, gb });
+
+  return ctx.replyWithMarkdown(
+`✅ *Plan Updated*
+
+Tenant:  ${tenantRes.rows[0].name}
+Plan:    ${label}
+Price:   ₦${price.toLocaleString('en-NG')}
+Data:    ${gb}GB
+Period:  ${validity}
+
+Run /reloadtenant ${tenantId} to apply changes.`
+  );
+}
+
+async function resetPlans(ctx) {
+  const parts    = ctx.message.text.split(' ');
+  const tenantId = parts[1];
+
+  if (!tenantId) return ctx.reply('Usage: /resetplans tenant_id');
+
+  await db.query(
+    'UPDATE tenant_plans SET active=false WHERE tenant_id=$1',
+    [tenantId]
+  );
+
+  return ctx.replyWithMarkdown(
+`✅ Plans reset to global defaults for \`${tenantId}\`
+
+Run /reloadtenant ${tenantId} to apply.`
+  );
+}
+
+
 module.exports = {
   startAddTenant,
   listTenants,
@@ -666,4 +787,7 @@ module.exports = {
   fixWebhooks,
   reloadTenant,
   testProvider,
+  managePlans,
+  setPlan,
+  resetPlans,
 };

@@ -233,8 +233,31 @@ async function handlePayment(bot, tenant, data) {
     return;
   }
 
-  const plans   = JSON.parse(process.env.PLANS || '[]');
-  const planObj = plans.find(p => p.label === plan);
+ // Check tenant-specific plans first, fall back to global
+  let planObj;
+  const tenantPlansRes = await db.query(
+    `SELECT * FROM tenant_plans
+     WHERE tenant_id=$1 AND label=$2 AND active=true
+     LIMIT 1`,
+    [tenantId, plan]
+  );
+
+  if (tenantPlansRes.rows.length) {
+    const tp = tenantPlansRes.rows[0];
+    planObj = {
+      id:             tp.plan_id,
+      label:          tp.label,
+      price:          parseFloat(tp.price),
+      gb:             parseFloat(tp.gb),
+      validity:       tp.validity,
+      omadaProfileId: tp.omada_profile_id,
+    };
+  } else {
+    const globalPlans = JSON.parse(process.env.PLANS || '[]');
+    planObj = globalPlans.find(p => p.label === plan);
+  }
+
+  
   const planGb  = planObj?.gb || 0;
   const days    = planObj?.validity?.includes('7') ? 7 : 30;
 

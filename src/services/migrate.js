@@ -24,6 +24,7 @@ async function migrate() {
       active              BOOLEAN DEFAULT true,
       created_at          TIMESTAMP DEFAULT NOW()
     );
+    
 
     CREATE TABLE IF NOT EXISTS users (
       telegram_id  BIGINT NOT NULL,
@@ -84,6 +85,19 @@ async function migrate() {
       data        TEXT,
       updated_at  TIMESTAMP DEFAULT NOW(),
       PRIMARY KEY (telegram_id, tenant_id)
+    );
+        CREATE TABLE IF NOT EXISTS tenant_plans (
+      id               SERIAL PRIMARY KEY,
+      tenant_id        VARCHAR(50) NOT NULL,
+      plan_id          INTEGER NOT NULL,
+      label            VARCHAR(50) NOT NULL,
+      price            NUMERIC(10,2) NOT NULL,
+      gb               NUMERIC(8,3) NOT NULL,
+      validity         VARCHAR(50) NOT NULL,
+      omada_profile_id VARCHAR(100),
+      active           BOOLEAN DEFAULT true,
+      created_at       TIMESTAMP DEFAULT NOW(),
+      UNIQUE (tenant_id, label)
     );
   `);
 

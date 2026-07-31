@@ -9,12 +9,34 @@ const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
   .split(',').map(Number).filter(Boolean);
 
 function register(bot, tenant) {
-  const plans = JSON.parse(process.env.PLANS || JSON.stringify([
-    { id: 1, label: '5GB',   price: 1000,  gb: 5,   validity: '7 days'  },
-    { id: 2, label: '20GB',  price: 3500,  gb: 20,  validity: '30 days' },
-    { id: 3, label: '100GB', price: 12000, gb: 100, validity: '30 days' },
-    { id: 4, label: '500GB', price: 60000, gb: 500, validity: '30 days' },
-  ]));
+ // Load tenant-specific plans or fall back to global
+  async function getPlans() {
+    const res = await db.query(
+      `SELECT * FROM tenant_plans
+       WHERE tenant_id=$1 AND active=true
+       ORDER BY plan_id`,
+      [tid]
+    );
+
+    if (res.rows.length) {
+      return res.rows.map(p => ({
+        id:             p.plan_id,
+        label:          p.label,
+        price:          parseFloat(p.price),
+        gb:             parseFloat(p.gb),
+        validity:       p.validity,
+        omadaProfileId: p.omada_profile_id,
+      }));
+    }
+
+    // Fall back to global plans
+    return JSON.parse(process.env.PLANS || JSON.stringify([
+      { id: 1, label: '5GB',   price: 1000,  gb: 5,   validity: '7 days'  },
+      { id: 2, label: '20GB',  price: 3500,  gb: 20,  validity: '30 days' },
+      { id: 3, label: '100GB', price: 12000, gb: 100, validity: '30 days' },
+      { id: 4, label: '500GB', price: 60000, gb: 500, validity: '30 days' },
+    ]));
+  }
 
   const tid = tenant.tenant_id;
 
@@ -140,6 +162,7 @@ ${syncNote}${warn}`
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
 
+    const plans = await getPlans();
     return ctx.replyWithMarkdown('📦 *Choose a data plan:*', {
       reply_markup: { inline_keyboard: planKeyboard(plans) },
     });
