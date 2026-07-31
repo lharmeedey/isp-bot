@@ -685,16 +685,16 @@ async function managePlans(ctx) {
     `• *${p.label}*: ₦${Number(p.price).toLocaleString('en-NG')} | ${p.gb}GB | ${p.validity}`
   ).join('\n');
 
-  return ctx.replyWithMarkdown(
-`📦 *Plans for ${tenant.name}*
+return ctx.reply(
+`📦 Plans for ${tenant.name}
 
-${lines}
+${lines.replace(/\*/g, '')}
 
 To update a plan use:
 /setplan ${tenantId} LABEL PRICE GB VALIDITY OMADA_PROFILE_ID
 
 Example:
-/setplan ${tenantId} 5GB 1500 5 "7 days" 6a64e90e5c7bdd073c22b522
+/setplan ${tenantId} 5GB 1500 5 7days 6a64e90e5c7bdd073c22b522
 
 To reset to global plans:
 /resetplans ${tenantId}`
@@ -705,9 +705,10 @@ async function setPlan(ctx) {
   const parts = ctx.message.text.split(' ');
 
   if (parts.length < 7) {
-    return ctx.reply(
+   return ctx.reply(
       'Usage: /setplan tenant_id LABEL PRICE GB VALIDITY OMADA_PROFILE_ID\n\n' +
-      'Example:\n/setplan tenant_123 5GB 1500 5 "7 days" 6a64e90e5c7bdd073c22b522'
+      'Note: Use underscore for spaces in validity e.g. 7_days or 30_days\n\n' +
+      'Example:\n/setplan tenant_123 5GB 1500 5 7_days 6a64e90e5c7bdd073c22b522'
     );
   }
 
@@ -715,7 +716,7 @@ async function setPlan(ctx) {
   const label          = parts[2];
   const price          = parseFloat(parts[3]);
   const gb             = parseFloat(parts[4]);
-  const validity       = parts[5].replace(/"/g, '');
+  const validity = parts[5].replace(/"/g, '').replace(/_/g, ' ');
   const omadaProfileId = parts[6];
 
   if (isNaN(price) || isNaN(gb)) {
