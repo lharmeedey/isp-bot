@@ -116,6 +116,29 @@ async function migrate() {
       created_at       TIMESTAMP DEFAULT NOW(),
       UNIQUE (tenant_id, code)
     );
+
+    -- ── Web app: operator accounts (email/password, NOT telegram-keyed) ──
+    CREATE TABLE IF NOT EXISTS operators (
+      id             SERIAL PRIMARY KEY,
+      tenant_id      VARCHAR(50) NOT NULL,
+      email          VARCHAR(255) UNIQUE NOT NULL,
+      password_hash  TEXT NOT NULL,
+      role           VARCHAR(20) DEFAULT 'owner',
+      email_verified BOOLEAN DEFAULT false,
+      active         BOOLEAN DEFAULT true,
+      created_at     TIMESTAMP DEFAULT NOW(),
+      last_login     TIMESTAMP
+    );
+
+    -- ── Web app: rotating refresh tokens (store only a hash) ──
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id          SERIAL PRIMARY KEY,
+      operator_id INTEGER NOT NULL,
+      token_hash  TEXT NOT NULL,
+      expires_at  TIMESTAMP NOT NULL,
+      revoked_at  TIMESTAMP,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
   `);
   // NOTE: indexes on voucher_stock are created near the end of this file,
   // AFTER the ALTER loop guarantees omada_profile_id exists on legacy tables.
@@ -138,6 +161,8 @@ async function migrate() {
     { name: 'mikrotik_url',        def: 'VARCHAR(200)' },
     { name: 'mikrotik_username',   def: 'VARCHAR(200)' },
     { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
+    { name: 'onboarding_step',     def: "VARCHAR(30) DEFAULT 'provider'" },
+    { name: 'created_via',         def: "VARCHAR(20) DEFAULT 'telegram'" },
 
   ];
 
@@ -223,6 +248,14 @@ async function migrate() {
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_voucher_stock_plan
       ON voucher_stock (tenant_id, plan, status)
+  `);
+
+  // ── Web app indexes ──
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_operators_tenant ON operators (tenant_id)
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_refresh_operator ON refresh_tokens (operator_id)
   `);
 
   // ── Self-heal: mark any already-delivered code as 'used' in stock ──

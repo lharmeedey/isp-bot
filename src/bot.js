@@ -94,6 +94,14 @@ const PORT = process.env.PORT || 3000;
 
 tenantManager.createWebhookRouter(app);
 
+// Web REST API (self-service onboarding + operator dashboard). Mounted with its
+// own CORS + JSON parser scoped to /api so the raw-body /pay/:tenantId webhook
+// route (which sets express.raw() per-route) is completely unaffected. Works in
+// both webhook and polling modes.
+const cors = require('./web/middleware/cors');
+const { buildApiRouter } = require('./web');
+app.use('/api', cors, express.json(), buildApiRouter());
+
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 if (WEBHOOK_URL) {
