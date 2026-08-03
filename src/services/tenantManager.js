@@ -6,6 +6,12 @@ const logger                 = require('./logger');
 const { decrypt }            = require('./encryption');
 const { webhookLimiter }     = require('./rateLimiter');
 const { clearProviderCache } = require('./providers');
+const {
+  parseMetadata,
+  planGb,
+  verifyPayment,
+  computeExpiry,
+} = require('./paymentLogic');
 
 const tenantBots = new Map();
 
@@ -174,15 +180,17 @@ function createWebhookRouter(masterApp) {
           return res.sendStatus(401);
         }
 
-        // Acknowledge immediately
-        res.sendStatus(200);
-
         const event = JSON.parse(req.body);
         logger.info('Paystack event received', { tenantId, event: event.event });
 
         if (event.event === 'charge.success') {
+          // Process BEFORE acknowledging. If this throws, we return 500 so
+          // Paystack retries — handlePayment is idempotent (dedupe on
+          // purchases.reference), so a retry never double-provisions.
           await handlePayment(entry.bot, entry.tenant, event.data);
         }
+
+        res.sendStatus(200);
 
       } catch (err) {
         logger.error('Payment webhook error', { tenantId, error: err.message, stack: err.stack });
@@ -210,14 +218,14 @@ function createWebhookRouter(masterApp) {
 }
 
 async function handlePayment(bot, tenant, data) {
-  const { telegram_id, plan, email } = data.metadata || {};
+  const meta = parseMetadata(data.metadata);
 
-  if (!telegram_id || !plan || !email) {
+  if (!meta.valid) {
     logger.error('Payment missing metadata', { metadata: data.metadata });
     return;
   }
 
-  const tid      = Number(telegram_id);
+  const { telegramId: tid, plan, email } = meta;
   const tenantId = tenant.tenant_id;
 
   logger.info('Processing payment', { tid, plan, email, tenantId, reference: data.reference });
@@ -266,16 +274,12 @@ async function handlePayment(bot, tenant, data) {
     });
   }
 
-
-  const planGb  = planObj?.gb || 0;
-  const days    = planObj?.validity?.includes('7') ? 7 : 30;
+  const gbForPlan = planGb(planObj);
 
   // ── Verify the amount paid matches the plan price ──
-  // Paystack sends amount in kobo; plan price is in naira.
-  const expectedKobo = Math.round((planObj?.price || 0) * 100);
-  const paidKobo     = Number(data.amount) || 0;
+  const check = verifyPayment(planObj, data.amount);
 
-  if (!planObj) {
+  if (!check.ok && check.reason === 'unknown_plan') {
     logger.error('Payment for unknown plan — refusing to provision', {
       tenantId, plan, reference: data.reference,
     });
@@ -289,26 +293,25 @@ async function handlePayment(bot, tenant, data) {
     return;
   }
 
-  if (expectedKobo > 0 && paidKobo < expectedKobo) {
+  if (!check.ok && check.reason === 'amount_mismatch') {
     logger.error('Payment amount mismatch — refusing to provision', {
       tenantId,
       plan,
-      expectedKobo,
-      paidKobo,
-      reference: data.reference,
+      expectedKobo: check.expectedKobo,
+      paidKobo:     check.paidKobo,
+      reference:    data.reference,
     });
     try {
       await bot.telegram.sendMessage(
         tid,
-        `⚠️ The amount paid (${(paidKobo / 100).toLocaleString()}) does not match ` +
+        `⚠️ The amount paid (${(check.paidKobo / 100).toLocaleString()}) does not match ` +
         `the price of the ${plan} plan. Contact /support with reference: ${data.reference}`
       );
     } catch (_) {}
     return;
   }
 
-  const expiry = new Date();
-  expiry.setDate(expiry.getDate() + days);
+  const expiry = computeExpiry(planObj.validity);
 
   // Always fetch fresh tenant from DB for provider
   const freshTenantRes = await db.query(
@@ -384,7 +387,7 @@ async function handlePayment(bot, tenant, data) {
        SET plan=$1, remaining_gb=$2, total_gb=$3,
            expiry=$4, status='active', last_sync=NOW()
        WHERE telegram_id=$5 AND tenant_id=$6`,
-      [plan, planGb, planGb, expiry.toISOString().slice(0, 10), tid, tenantId]
+      [plan, gbForPlan, gbForPlan, expiry.toISOString().slice(0, 10), tid, tenantId]
     );
 
     await client.query(
@@ -460,6 +463,11 @@ _Connect to the WiFi network and enter your password on the login page._`;
     } catch (e) {
       logger.error('Could not notify user of failure', { tid });
     }
+
+    // Re-throw so the webhook responds non-2xx and Paystack retries.
+    // handlePayment is idempotent (dedupe on purchases.reference), so a retry
+    // won't double-provision.
+    throw err;
 
   } finally {
     client.release();
