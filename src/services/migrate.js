@@ -99,6 +99,28 @@ async function migrate() {
       created_at       TIMESTAMP DEFAULT NOW(),
       UNIQUE (tenant_id, label)
     );
+
+    CREATE TABLE IF NOT EXISTS voucher_stock (
+      id               SERIAL PRIMARY KEY,
+      tenant_id        VARCHAR(50) NOT NULL,
+      plan             VARCHAR(50),
+      omada_profile_id VARCHAR(100),
+      code             VARCHAR(100) NOT NULL,
+      omada_voucher_id VARCHAR(100),
+      status           VARCHAR(20) DEFAULT 'unused',
+      omada_status     INTEGER,
+      email            VARCHAR(255),
+      reference        VARCHAR(100),
+      assigned_at      TIMESTAMP,
+      last_synced      TIMESTAMP,
+      created_at       TIMESTAMP DEFAULT NOW(),
+      UNIQUE (tenant_id, code)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_lookup
+      ON voucher_stock (tenant_id, omada_profile_id, status);
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_plan
+      ON voucher_stock (tenant_id, plan, status);
   `);
 
   console.log('✅ Tables created/verified');
@@ -113,10 +135,13 @@ async function migrate() {
     { name: 'omada_client_secret', def: 'VARCHAR(200)' },
     { name: 'omada_admin_username', def: 'VARCHAR(200)' },
     { name: 'omada_admin_password', def: 'VARCHAR(200)' },
+    { name: 'omada_controller_type', def: "VARCHAR(20) DEFAULT 'software'" },
+    { name: 'omada_cloud_cert',    def: 'TEXT' },
+    { name: 'omada_cloud_key',     def: 'TEXT' },
     { name: 'mikrotik_url',        def: 'VARCHAR(200)' },
     { name: 'mikrotik_username',   def: 'VARCHAR(200)' },
     { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
-  
+
   ];
 
   
@@ -145,15 +170,16 @@ async function migrate() {
     console.log('✅ Added omada columns to vouchers');
   }
 
-  // Add omada_status and last_synced to voucher_stock if missing
-const stockCols = [
-  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
-  { name: 'email', def: 'VARCHAR(255)' },
-  { name: 'reference', def: 'VARCHAR(100)' },
-  { name: 'assigned_at', def: 'TIMESTAMP' },
-  { name: 'omada_status', def: 'INTEGER' },
-  { name: 'last_synced', def: 'TIMESTAMP' },
-];
+  // Add missing columns to voucher_stock for existing DBs
+  const stockCols = [
+    { name: 'omada_profile_id', def: 'VARCHAR(100)' },
+    { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
+    { name: 'email', def: 'VARCHAR(255)' },
+    { name: 'reference', def: 'VARCHAR(100)' },
+    { name: 'assigned_at', def: 'TIMESTAMP' },
+    { name: 'omada_status', def: 'INTEGER' },
+    { name: 'last_synced', def: 'TIMESTAMP' },
+  ];
 
   for (const col of stockCols) {
     const exists = await db.query(`
@@ -167,29 +193,16 @@ const stockCols = [
     }
   }
 
-  // Add missing voucher_stock columns
-const voucherStockCols = [
-  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
-  { name: 'email', def: 'VARCHAR(255)' },
-  { name: 'reference', def: 'VARCHAR(100)' },
-  { name: 'assigned_at', def: 'TIMESTAMP' }
-];
+  // Ensure the lookup indexes exist on legacy voucher_stock tables
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_lookup
+      ON voucher_stock (tenant_id, omada_profile_id, status)
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_plan
+      ON voucher_stock (tenant_id, plan, status)
+  `);
 
-for (const col of voucherStockCols) {
-  const exists = await db.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name='voucher_stock'
-      AND column_name=$1
-  `, [col.name]);
-
-  if (!exists.rows.length) {
-    await db.query(
-      `ALTER TABLE voucher_stock ADD COLUMN ${col.name} ${col.def}`
-    );
-    console.log(`✅ Added voucher_stock.${col.name}`);
-  }
-}
   console.log('✅ Migration complete');
   process.exit(0);
 }

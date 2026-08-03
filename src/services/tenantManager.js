@@ -166,8 +166,7 @@ function createWebhookRouter(masterApp) {
 
         logger.info('Webhook signature check', {
           tenantId,
-          match:         signatureMatch,
-          secretPreview: paystackSecret?.slice(0, 15),
+          match: signatureMatch,
         });
 
         if (!signatureMatch) {
@@ -267,9 +266,46 @@ async function handlePayment(bot, tenant, data) {
     });
   }
 
-  
+
   const planGb  = planObj?.gb || 0;
   const days    = planObj?.validity?.includes('7') ? 7 : 30;
+
+  // ── Verify the amount paid matches the plan price ──
+  // Paystack sends amount in kobo; plan price is in naira.
+  const expectedKobo = Math.round((planObj?.price || 0) * 100);
+  const paidKobo     = Number(data.amount) || 0;
+
+  if (!planObj) {
+    logger.error('Payment for unknown plan — refusing to provision', {
+      tenantId, plan, reference: data.reference,
+    });
+    try {
+      await bot.telegram.sendMessage(
+        tid,
+        `⚠️ We received your payment but couldn't match the plan. ` +
+        `Contact /support with reference: ${data.reference}`
+      );
+    } catch (_) {}
+    return;
+  }
+
+  if (expectedKobo > 0 && paidKobo < expectedKobo) {
+    logger.error('Payment amount mismatch — refusing to provision', {
+      tenantId,
+      plan,
+      expectedKobo,
+      paidKobo,
+      reference: data.reference,
+    });
+    try {
+      await bot.telegram.sendMessage(
+        tid,
+        `⚠️ The amount paid (${(paidKobo / 100).toLocaleString()}) does not match ` +
+        `the price of the ${plan} plan. Contact /support with reference: ${data.reference}`
+      );
+    } catch (_) {}
+    return;
+  }
 
   const expiry = new Date();
   expiry.setDate(expiry.getDate() + days);

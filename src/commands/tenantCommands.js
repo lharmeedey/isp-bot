@@ -509,6 +509,10 @@ Inactive: *${map['inactive'] || 0}*`
   bot.command('syncnow', adminOnly(tid, async (ctx) => {
     await ctx.reply('⏳ Sync started in background. Use /stockreport in 2 minutes to see results.');
 
+    // Capture the chat id — ctx is tied to the (already-answered) HTTP
+    // response in webhook mode, so the detached task must use bot.telegram.
+    const chatId = ctx.chat.id;
+
     setImmediate(async () => {
       try {
         const { getProvider } = require('../services/providers');
@@ -518,7 +522,7 @@ Inactive: *${map['inactive'] || 0}*`
         const freshTenant = freshTenantRes.rows[0];
 
         if (freshTenant.network_provider !== 'omada') {
-          return ctx.reply('This tenant is not using Omada.');
+          return bot.telegram.sendMessage(chatId, 'This tenant is not using Omada.');
         }
 
         const provider = getProvider(freshTenant);
@@ -540,19 +544,21 @@ Inactive: *${map['inactive'] || 0}*`
             ).join('\n')
           : '_No vouchers in stock yet_';
 
-        await ctx.replyWithMarkdown(
+        await bot.telegram.sendMessage(
+          chatId,
 `✅ *Sync Complete*
 
 New vouchers added: ${result.totalInserted}
 Status updated:     ${result.totalUpdated}
 
 *Current Stock:*
-${lines}`
+${lines}`,
+          { parse_mode: 'Markdown' }
         );
 
       } catch (err) {
         logger.error('Background sync failed', { tenantId: tid, error: err.message });
-        await ctx.reply(`❌ Sync failed: ${err.message}`);
+        await bot.telegram.sendMessage(chatId, `❌ Sync failed: ${err.message}`).catch(() => {});
       }
     });
   }));

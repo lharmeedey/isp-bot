@@ -6,28 +6,43 @@ class NoneProvider {
   }
 
   async createVoucher({ plan, email, reference }) {
-    // Try to get a voucher from stock
-    const res = await db.query(
-      `SELECT id, code FROM voucher_stock
-       WHERE tenant_id=$1 AND plan=$2 AND status='unused'
-       ORDER BY created_at ASC
-       LIMIT 1`,
-      [this.tenant.tenant_id, plan]
-    );
+    // Atomically claim a voucher from stock so two concurrent payments
+    // can never receive the same code.
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
 
-    if (res.rows.length) {
-      const voucher = res.rows[0];
-      await db.query(
-        `UPDATE voucher_stock
-         SET status='used', email=$1, reference=$2, assigned_at=NOW()
-         WHERE id=$3`,
-        [email, reference, voucher.id]
+      const res = await client.query(
+        `SELECT id, code FROM voucher_stock
+          WHERE tenant_id=$1 AND plan=$2 AND status='unused'
+          ORDER BY id ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+        [this.tenant.tenant_id, plan]
       );
-      return {
-        code:           voucher.code,
-        omadaVoucherId: null,
-        provider:       'stock',
-      };
+
+      if (res.rows.length) {
+        const voucher = res.rows[0];
+        await client.query(
+          `UPDATE voucher_stock
+              SET status='used', email=$1, reference=$2, assigned_at=NOW()
+            WHERE id=$3`,
+          [email, reference, voucher.id]
+        );
+        await client.query('COMMIT');
+        return {
+          code:           voucher.code,
+          omadaVoucherId: null,
+          provider:       'stock',
+        };
+      }
+
+      await client.query('ROLLBACK');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
 
     // True fallback — random code if no stock
