@@ -116,12 +116,9 @@ async function migrate() {
       created_at       TIMESTAMP DEFAULT NOW(),
       UNIQUE (tenant_id, code)
     );
-
-    CREATE INDEX IF NOT EXISTS idx_voucher_stock_lookup
-      ON voucher_stock (tenant_id, omada_profile_id, status);
-    CREATE INDEX IF NOT EXISTS idx_voucher_stock_plan
-      ON voucher_stock (tenant_id, plan, status);
   `);
+  // NOTE: indexes on voucher_stock are created near the end of this file,
+  // AFTER the ALTER loop guarantees omada_profile_id exists on legacy tables.
 
   console.log('✅ Tables created/verified');
 
@@ -191,6 +188,31 @@ async function migrate() {
       await db.query(`ALTER TABLE voucher_stock ADD COLUMN ${col.name} ${col.def}`);
       console.log(`✅ Added column voucher_stock.${col.name}`);
     }
+  }
+
+  // Ensure the UNIQUE (tenant_id, code) constraint exists — the ON CONFLICT
+  // in the voucher sync depends on it. Legacy tables may have UNIQUE(code) only.
+  const uniqExists = await db.query(`
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'voucher_stock'::regclass
+      AND contype = 'u'
+      AND conname = 'voucher_stock_tenant_id_code_key'
+  `);
+  if (!uniqExists.rows.length) {
+    // De-dupe any rows that would violate the new constraint, keeping the lowest id
+    await db.query(`
+      DELETE FROM voucher_stock a
+      USING voucher_stock b
+      WHERE a.tenant_id = b.tenant_id
+        AND a.code = b.code
+        AND a.id > b.id
+    `);
+    await db.query(`
+      ALTER TABLE voucher_stock
+        ADD CONSTRAINT voucher_stock_tenant_id_code_key UNIQUE (tenant_id, code)
+    `);
+    console.log('✅ Added UNIQUE (tenant_id, code) to voucher_stock');
   }
 
   // Ensure the lookup indexes exist on legacy voucher_stock tables
