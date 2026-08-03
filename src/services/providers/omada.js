@@ -215,20 +215,45 @@ class OmadaProvider {
 
   // ── Sync all voucher groups into DB ────────────
   // Flow:
-  // 1. Get all groups via OpenAPI
+  // 1. Get all groups via OpenAPI (each group == one Omada profile)
   // 2. For each group, fetch all vouchers via session API
-  // 3. Insert unused ones into voucher_stock
+  // 3. Upsert into voucher_stock keyed by omada_profile_id
+  //
+  // Stock is keyed by omada_profile_id, NOT plan label — multiple plans
+  // (e.g. 3GB and 5GB) may share one Omada voucher group, so a voucher
+  // belongs to a profile and any plan mapped to that profile can draw from it.
   async syncVouchersToDb(db) {
+
     const groups = await this.getVoucherGroups();
-    const plans  = JSON.parse(process.env.PLANS || '[]');
+
+    // Load tenant-specific plans first, fall back to global
+    const tenantPlansRes = await db.query(
+      `SELECT * FROM tenant_plans
+       WHERE tenant_id=$1 AND active=true`,
+      [this.tenant.tenant_id]
+    );
+
+    let plans;
+    if (tenantPlansRes.rows.length) {
+      plans = tenantPlansRes.rows.map(p => ({
+        id:             p.plan_id,
+        label:          p.label,
+        price:          parseFloat(p.price),
+        gb:             parseFloat(p.gb),
+        validity:       p.validity,
+        omadaProfileId: p.omada_profile_id,
+      }));
+    } else {
+      plans = JSON.parse(process.env.PLANS || '[]');
+    }
 
     let totalInserted = 0;
     let totalUpdated  = 0;
 
     for (const group of groups) {
-      // Match group to plan by omadaProfileId
-      const plan = plans.find(p => p.omadaProfileId === group.id);
-      if (!plan) {
+      // Every plan that maps to this group's profile id
+      const matchedPlans = plans.filter(p => p.omadaProfileId === group.id);
+      if (!matchedPlans.length) {
         logger.debug('No plan matched for voucher group', {
           groupName: group.name,
           groupId:   group.id,
@@ -236,43 +261,51 @@ class OmadaProvider {
         continue;
       }
 
+      // Representative label for reporting (first mapped plan)
+      const planLabel = matchedPlans.map(p => p.label).join('/');
+
       logger.info('Syncing voucher group', {
         tenantId:    this.tenant.tenant_id,
         groupName:   group.name,
+        profileId:   group.id,
+        plans:       planLabel,
         unusedCount: group.unusedCount,
         totalCount:  group.totalCount,
       });
 
-      // Check current DB stock — only sync if below 50
+      // Check current DB stock for this PROFILE — only sync if below 50
       const stockCheck = await db.query(
         `SELECT COUNT(*) as count FROM voucher_stock
-         WHERE tenant_id=$1 AND plan=$2 AND status='unused'`,
-        [this.tenant.tenant_id, plan.label]
+         WHERE tenant_id=$1 AND omada_profile_id=$2 AND status='unused'`,
+        [this.tenant.tenant_id, group.id]
       );
       const currentStock = parseInt(stockCheck.rows[0].count);
 
       if (currentStock >= 50) {
         logger.debug('Stock sufficient, skipping sync', {
-          tenantId:     this.tenant.tenant_id,
-          plan:         plan.label,
+          tenantId:    this.tenant.tenant_id,
+          profileId:   group.id,
+          plans:       planLabel,
           currentStock,
         });
         continue;
       }
 
       logger.info('Stock low, pulling from Omada', {
-        tenantId:     this.tenant.tenant_id,
-        plan:         plan.label,
+        tenantId:    this.tenant.tenant_id,
+        profileId:   group.id,
+        plans:       planLabel,
         currentStock,
-        target:       100,
+        target:      100,
       });
 
       try {
-        let page     = 1;
-        let hasMore  = true;
+        const pageSize = 100;
+        let page       = 1;
+        let hasMore    = true;
 
         while (hasMore) {
-          const vouchers = await this.getVouchersForGroup(group.id, page, 100);
+          const vouchers = await this.getVouchersForGroup(group.id, page, pageSize);
 
           if (!vouchers.length) {
             hasMore = false;
@@ -287,27 +320,38 @@ class OmadaProvider {
               const dbStatus = v.status === 0 ? 'unused' : 'used';
 
               const result = await db.query(
-  `INSERT INTO voucher_stock
-   (tenant_id, plan, code, omada_voucher_id, status)
-   VALUES ($1,$2,$3,$4,$5)
-   ON CONFLICT (code)
-   DO UPDATE SET
-       status = EXCLUDED.status,
-       omada_voucher_id = EXCLUDED.omada_voucher_id
-   RETURNING xmax = 0 AS inserted`,
-  [
-      this.tenant.tenant_id,
-      plan.label,
-      String(v.code),
-      v.id || null,
-      dbStatus
-  ]
-);
+                `INSERT INTO voucher_stock
+                   (tenant_id, plan, omada_profile_id, code, omada_voucher_id,
+                    status, omada_status, last_synced)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                 ON CONFLICT (tenant_id, code)
+                 DO UPDATE SET
+                     plan             = EXCLUDED.plan,
+                     omada_profile_id = EXCLUDED.omada_profile_id,
+                     omada_voucher_id = EXCLUDED.omada_voucher_id,
+                     omada_status     = EXCLUDED.omada_status,
+                     last_synced      = NOW(),
+                     -- never revive a voucher we've already handed out
+                     status = CASE
+                       WHEN voucher_stock.status = 'used'
+                            AND voucher_stock.reference IS NOT NULL
+                       THEN 'used'
+                       ELSE EXCLUDED.status
+                     END
+                 RETURNING xmax = 0 AS inserted`,
+                [
+                  this.tenant.tenant_id,
+                  planLabel,
+                  group.id,
+                  String(v.code),
+                  v.id || null,
+                  dbStatus,
+                  v.status ?? null,
+                ]
+              );
 
-if (result.rows[0].inserted)
-    totalInserted++;
-else
-    totalUpdated++;
+              if (result.rows[0].inserted) totalInserted++;
+              else                          totalUpdated++;
 
             } catch (e) {
               logger.warn('Voucher insert/update failed', {
@@ -317,14 +361,15 @@ else
             }
           }
 
-          // If we got less than pageSize, no more pages
-          hasMore = vouchers.length === 500;
+          // A short page means we've reached the end
+          hasMore = vouchers.length === pageSize;
           page++;
         }
 
         logger.info('Group sync complete', {
           tenantId:  this.tenant.tenant_id,
-          plan:      plan.label,
+          profileId: group.id,
+          plans:     planLabel,
           inserted:  totalInserted,
           updated:   totalUpdated,
         });
@@ -340,44 +385,105 @@ else
     return { totalInserted, totalUpdated };
   }
 
+  // ── Resolve the omada_profile_id for a plan label ──
+  async _profileIdForPlan(db, planLabel, planConfig) {
+    if (planConfig?.omadaProfileId) return planConfig.omadaProfileId;
+
+    const res = await db.query(
+      `SELECT omada_profile_id FROM tenant_plans
+       WHERE tenant_id=$1 AND label=$2 AND active=true
+       LIMIT 1`,
+      [this.tenant.tenant_id, planLabel]
+    );
+    if (res.rows[0]?.omada_profile_id) return res.rows[0].omada_profile_id;
+
+    // Global plans fallback
+    try {
+      const globalPlans = JSON.parse(process.env.PLANS || '[]');
+      const match = globalPlans.find(p => p.label === planLabel);
+      if (match?.omadaProfileId) return match.omadaProfileId;
+    } catch (_) { /* ignore */ }
+
+    return null;
+  }
+
   // ── Main createVoucher — picks from synced stock ──
   // Flow:
-  // 1. Query voucher_stock for unused voucher matching plan
-  // 2. Mark it as used
+  // 1. Resolve the plan's omada_profile_id
+  // 2. Atomically claim an unused voucher for that profile (row lock)
   // 3. Return the code to the customer
   // 4. If stock is empty, trigger immediate sync and retry once
   async createVoucher({ plan, email, reference, planConfig }) {
     const db = require('../db');
 
+    const profileId = await this._profileIdForPlan(db, plan, planConfig);
+
     logger.info('Getting voucher from stock', {
       tenantId: this.tenant.tenant_id,
       plan,
+      profileId,
       email,
     });
 
-    const pickVoucher = async () => {
-      const res = await db.query(
-        `SELECT id, code, omada_voucher_id
-         FROM voucher_stock
-         WHERE tenant_id=$1 AND plan=$2 AND status='unused'
-         ORDER BY id ASC
-         LIMIT 1`,
-        [this.tenant.tenant_id, plan]
-      );
-      return res.rows[0] || null;
+    // Atomically select + mark a voucher used inside one transaction so two
+    // concurrent payments can never be handed the same code.
+    const claimVoucher = async () => {
+      const client = await db.getClient();
+      try {
+        await client.query('BEGIN');
+
+        const sel = await client.query(
+          `SELECT id, code, omada_voucher_id
+             FROM voucher_stock
+            WHERE tenant_id=$1
+              AND status='unused'
+              AND ($2::text IS NULL OR omada_profile_id=$2 OR plan=$3)
+              AND NOT EXISTS (
+                SELECT 1 FROM vouchers v
+                WHERE v.code = voucher_stock.code
+                  AND v.tenant_id = voucher_stock.tenant_id
+              )
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED`,
+          [this.tenant.tenant_id, profileId, plan]
+        );
+
+        if (!sel.rows.length) {
+          await client.query('ROLLBACK');
+          return null;
+        }
+
+        const row = sel.rows[0];
+        await client.query(
+          `UPDATE voucher_stock
+              SET status='used', email=$1, reference=$2, assigned_at=NOW()
+            WHERE id=$3`,
+          [email, reference, row.id]
+        );
+
+        await client.query('COMMIT');
+        return row;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
     };
 
-    let voucher = await pickVoucher();
+    let voucher = await claimVoucher();
 
-    // Stock empty — sync immediately and retry
+    // Stock empty — sync immediately and retry once
     if (!voucher) {
       logger.warn('Stock empty, syncing from Omada now', {
         tenantId: this.tenant.tenant_id,
         plan,
+        profileId,
       });
 
       await this.syncVouchersToDb(db);
-      voucher = await pickVoucher();
+      voucher = await claimVoucher();
 
       if (!voucher) {
         throw new Error(
@@ -387,19 +493,12 @@ else
       }
     }
 
-    // Mark as used
-    await db.query(
-      `UPDATE voucher_stock
-       SET status='used', email=$1, reference=$2, assigned_at=NOW()
-       WHERE id=$3`,
-      [email, reference, voucher.id]
-    );
-
     logger.info('Voucher assigned from stock', {
       tenantId:        this.tenant.tenant_id,
       code:            voucher.code,
       omadaVoucherId:  voucher.omada_voucher_id,
       plan,
+      profileId,
     });
 
     return {
@@ -465,7 +564,11 @@ else
 
       return {
         success:        true,
-        message:        `Connected. ${groups.length} group(s): ${groups.map(g => `${g.name} (${g.unusedCount} unused)`).join(', ')}${sessionStatus}`,
+        message:        `Connected. ${groups.length} group(s):\n` +
+          groups.map(g =>
+            `• ${g.name} (${g.unusedCount} unused)\n  profile id: ${g.id}`
+          ).join('\n') +
+          sessionStatus,
         controllerType: this.controllerType,
       };
     } catch (err) {

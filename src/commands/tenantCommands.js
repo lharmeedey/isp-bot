@@ -1,15 +1,22 @@
 const db      = require('../services/db');
 const logger  = require('../services/logger');
-const { decrypt }        = require('../services/encryption');
+const { decrypt }                        = require('../services/encryption');
 const { commandLimiter, paymentLimiter } = require('../services/rateLimiter');
 const { naira, gb, date, syncAge, usageBar, planKeyboard } = require('../services/helpers');
 const axios   = require('axios');
-const { registerSyncCommands, handleVoucherText } = require('./syncVouchers');
+
 const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
   .split(',').map(Number).filter(Boolean);
 
 function register(bot, tenant) {
- // Load tenant-specific plans or fall back to global
+  const tid = tenant.tenant_id;
+
+  // Per-tenant registration state
+  const awaitingEmail    = new Set();
+  const awaitingName     = new Map();
+  const awaitingSubAdmin = new Map();
+
+  // ── Load plans — tenant-specific or global ────
   async function getPlans() {
     const res = await db.query(
       `SELECT * FROM tenant_plans
@@ -29,7 +36,6 @@ function register(bot, tenant) {
       }));
     }
 
-    // Fall back to global plans
     return JSON.parse(process.env.PLANS || JSON.stringify([
       { id: 1, label: '5GB',   price: 1000,  gb: 5,   validity: '7 days'  },
       { id: 2, label: '20GB',  price: 3500,  gb: 20,  validity: '30 days' },
@@ -38,17 +44,7 @@ function register(bot, tenant) {
     ]));
   }
 
-  const tid = tenant.tenant_id;
-
-  // Register voucher sync commands and get state
-  const { awaitingVouchers } = registerSyncCommands(bot, tenant);
-
-  // Per-tenant registration state — persists in memory per bot instance
-  const awaitingEmail    = new Set();
-  const awaitingName     = new Map();
-  const awaitingSubAdmin = new Map();
-
-  // ── Rate limit middleware ─────────────────────
+  // ── Rate limit middleware ──────────────────────
   function rateLimit(ctx, next) {
     const userId = ctx.from?.id;
     if (!commandLimiter(String(userId))) {
@@ -67,6 +63,7 @@ function register(bot, tenant) {
 
 /balance – Check your data balance
 /buy – Purchase a data plan
+/renewplan – Renew your current plan
 /history – View past purchases
 /support – Contact support`
       );
@@ -87,62 +84,17 @@ Let's get you set up.`
     return ctx.reply('Please enter your email address (e.g. you@example.com):');
   });
 
- // ── /balance ──────────────────────────────────
+  // ── /balance ──────────────────────────────────
   bot.command('balance', rateLimit, async (ctx) => {
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please send /start to register first.');
     if (!user.plan) return ctx.reply('No active plan yet. Use /buy to get started.');
 
-    // Try to get live usage from network provider
-    const { getProvider } = require('../services/providers');
-    const freshTenantRes  = await db.query(
-      'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
-    );
-    const freshTenant = freshTenantRes.rows[0];
-    const provider    = getProvider(freshTenant);
-
-    let remaining = parseFloat(user.remaining_gb);
-    let total     = parseFloat(user.total_gb);
-    let syncNote  = `_Last updated: ${syncAge(user)}_`;
-    let expiry    = user.expiry;
-
-    // Fetch live data if provider is configured
-    if (freshTenant.network_provider !== 'none') {
-      try {
-        // Get user's active voucher
-        const voucherRes = await db.query(
-          `SELECT * FROM vouchers
-           WHERE telegram_id=$1 AND tenant_id=$2
-           ORDER BY created_at DESC LIMIT 1`,
-          [ctx.from.id, tid]
-        );
-
-        if (voucherRes.rows[0]?.omada_voucher_id) {
-          const liveUsage = await provider.getUsage(voucherRes.rows[0].omada_voucher_id);
-
-          if (liveUsage) {
-            remaining = liveUsage.remainingGb ?? remaining;
-            total     = liveUsage.totalGb     ?? total;
-            expiry    = liveUsage.expiry       ?? expiry;
-            syncNote  = `_Live data from network ✓_`;
-
-            // Update DB with fresh values
-            await db.query(
-              `UPDATE users SET remaining_gb=$1, total_gb=$2, last_sync=NOW()
-               WHERE telegram_id=$3 AND tenant_id=$4`,
-              [remaining, total, ctx.from.id, tid]
-            );
-          }
-        }
-      } catch (err) {
-        logger.warn('Live balance fetch failed, using cached', { error: err.message });
-        syncNote = `_Cached data — ${syncAge(user)}_`;
-      }
-    }
-
-    const pct  = total > 0 ? Math.round((remaining / total) * 100) : 0;
-    const bar  = usageBar(remaining, total);
-    const warn = pct < 20 ? '\n\n⚠️ *Low data!* Recharge with /buy.' : '';
+    const remaining = parseFloat(user.remaining_gb);
+    const total     = parseFloat(user.total_gb);
+    const pct       = total > 0 ? Math.round((remaining / total) * 100) : 0;
+    const bar       = usageBar(remaining, total);
+    const warn      = pct < 20 ? '\n\n⚠️ *Low data!* Recharge with /buy.' : '';
 
     return ctx.replyWithMarkdown(
 `📊 *Your Data Balance*
@@ -150,10 +102,10 @@ Let's get you set up.`
 Plan:      *${user.plan}*
 Remaining: *${gb(remaining)}*
 Used:      ${gb(total - remaining)} of ${gb(total)}
-Expiry:    ${date(expiry)}
+Expiry:    ${date(user.expiry)}
 
 ${bar}  ${pct}%
-${syncNote}${warn}`
+_Last updated: ${syncAge(user)}_${warn}`
     );
   });
 
@@ -179,6 +131,7 @@ ${syncNote}${warn}`
     const user = await getUser(ctx.from.id, tid);
     if (!user) return ctx.reply('Please /start first.');
 
+    const plans  = await getPlans();
     const planId = parseInt(ctx.callbackQuery.data.replace('plan_', ''));
     const plan   = plans.find(p => p.id === planId);
     if (!plan) return ctx.reply('Invalid plan. Try /buy again.');
@@ -201,14 +154,14 @@ ${syncNote}${warn}`
   bot.action(/^confirm_\d+$/, async (ctx) => {
     await ctx.answerCbQuery('Generating payment link...');
 
-    // Rate limit payment attempts
     if (!paymentLimiter(String(ctx.from.id))) {
-      return ctx.editMessageText('⚠️ Too many payment attempts. Please wait a few minutes and try again.');
+      return ctx.editMessageText('⚠️ Too many payment attempts. Please wait a few minutes.');
     }
 
     const user = await getUser(ctx.from.id, tid);
     if (!user) return;
 
+    const plans  = await getPlans();
     const planId = parseInt(ctx.callbackQuery.data.replace('confirm_', ''));
     const plan   = plans.find(p => p.id === planId);
     if (!plan) return;
@@ -218,7 +171,6 @@ ${syncNote}${warn}`
     try {
       await ctx.editMessageText('⏳ Creating payment link...');
 
-      // Always fetch fresh from DB — never rely on closure
       const freshTenant = await db.query(
         'SELECT paystack_secret FROM tenants WHERE tenant_id=$1',
         [tid]
@@ -228,10 +180,10 @@ ${syncNote}${warn}`
         return ctx.editMessageText('❌ Configuration error. Contact support.');
       }
 
-      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret);
+      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret)
+        || freshTenant.rows[0].paystack_secret;
 
       if (!paystackSecret || !paystackSecret.startsWith('sk_')) {
-        logger.error('Invalid Paystack secret', { tenantId: tid });
         return ctx.editMessageText('❌ Payment not configured. Contact support.');
       }
 
@@ -249,8 +201,8 @@ ${syncNote}${warn}`
           },
         },
         {
-          headers:         { Authorization: `Bearer ${paystackSecret}` },
-          timeout:         10000,
+          headers:  { Authorization: `Bearer ${paystackSecret}` },
+          timeout:  10000,
         }
       );
 
@@ -273,12 +225,10 @@ ${syncNote}${warn}`
         }
       );
 
-   } catch (err) {
+    } catch (err) {
       const detail = err.response?.data?.message || err.message;
-      const full   = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-      logger.error('Payment link error', { tenantId: tid, error: full });
-      console.error('PAYMENT ERROR FULL:', full);
-      await ctx.editMessageText(`❌ Payment error: ${full}`);
+      logger.error('Payment link error', { tenantId: tid, error: detail });
+      await ctx.editMessageText('❌ Could not create payment link. Please try again or contact /support.');
     }
   });
 
@@ -293,38 +243,31 @@ ${syncNote}${warn}`
     if (!user) return ctx.reply('Please send /start to register first.');
 
     if (!user.plan) {
-      return ctx.replyWithMarkdown(
-`You don't have an active plan to renew.
-
-Use /buy to purchase a new plan.`
-      );
+      return ctx.reply('No active plan to renew. Use /buy to purchase a new plan.');
     }
 
+    const plans       = await getPlans();
     const currentPlan = plans.find(p => p.label === user.plan);
-    const expiry      = date(user.expiry);
     const remaining   = parseFloat(user.remaining_gb);
     const total       = parseFloat(user.total_gb);
     const pct         = total > 0 ? Math.round((remaining / total) * 100) : 0;
 
-    // Show current plan info and renewal options
     await ctx.replyWithMarkdown(
 `🔄 *Renew Your Plan*
 
 Current Plan: *${user.plan}*
 Remaining:    *${gb(remaining)}* (${pct}%)
-Expiry:       ${expiry}
+Expiry:       ${date(user.expiry)}
 
 Choose how you want to renew:`
     );
 
-    // Option 1 — renew same plan
-    // Option 2 — choose a different plan
     return ctx.replyWithMarkdown('What would you like to do?', {
       reply_markup: {
         inline_keyboard: [
           [{
             text:          `🔁 Renew Same Plan (${user.plan} — ${naira(currentPlan?.price || 0)})`,
-            callback_data: `renew_same`,
+            callback_data: 'renew_same',
           }],
           [{
             text:          '📦 Choose Different Plan',
@@ -339,7 +282,6 @@ Choose how you want to renew:`
     });
   });
 
-  // ── Renew same plan ───────────────────────────
   bot.action('renew_same', async (ctx) => {
     await ctx.answerCbQuery();
 
@@ -350,7 +292,8 @@ Choose how you want to renew:`
     const user = await getUser(ctx.from.id, tid);
     if (!user?.plan) return ctx.editMessageText('No active plan found. Use /buy instead.');
 
-    const plan = plans.find(p => p.label === user.plan);
+    const plans = await getPlans();
+    const plan  = plans.find(p => p.label === user.plan);
     if (!plan) return ctx.editMessageText('Your current plan is no longer available. Use /buy to choose a new one.');
 
     const reference = `renew-${tid}-${ctx.from.id}-${Date.now()}`;
@@ -358,20 +301,11 @@ Choose how you want to renew:`
     try {
       await ctx.editMessageText('⏳ Creating renewal payment link...');
 
-      const freshTenant = await db.query(
-        'SELECT paystack_secret FROM tenants WHERE tenant_id=$1',
-        [tid]
+      const freshTenant    = await db.query(
+        'SELECT paystack_secret FROM tenants WHERE tenant_id=$1', [tid]
       );
-
-      if (!freshTenant.rows.length) {
-        return ctx.editMessageText('❌ Configuration error. Contact support.');
-      }
-
-      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret);
-
-      if (!paystackSecret || !paystackSecret.startsWith('sk_')) {
-        return ctx.editMessageText('❌ Payment not configured. Contact support.');
-      }
+      const paystackSecret = decrypt(freshTenant.rows[0].paystack_secret)
+        || freshTenant.rows[0].paystack_secret;
 
       const res = await axios.post(
         'https://api.paystack.co/transaction/initialize',
@@ -393,15 +327,8 @@ Choose how you want to renew:`
         }
       );
 
-      logger.info('Renewal payment link created', {
-        tenantId:  tid,
-        plan:      plan.label,
-        email:     user.email,
-        reference,
-      });
-
       await ctx.editMessageText(
-        `🔄 *Renew ${plan.label}*\n\nAmount: ${naira(plan.price)}\nValidity: ${plan.validity}\n\n_Your data will be topped up immediately after payment._`,
+        `🔄 *Renew ${plan.label}*\n\nAmount: ${naira(plan.price)}\nValidity: ${plan.validity}\n\n_Tap Pay Now to complete._`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -413,15 +340,14 @@ Choose how you want to renew:`
       );
 
     } catch (err) {
-      const detail = err.response?.data?.message || err.message;
-      logger.error('Renewal payment error', { tenantId: tid, error: detail });
-      await ctx.editMessageText('❌ Could not create payment link. Please try again or contact /support.');
+      logger.error('Renewal payment error', { tenantId: tid, error: err.message });
+      await ctx.editMessageText('❌ Could not create payment link. Try again or contact /support.');
     }
   });
 
-  // ── Choose different plan for renewal ─────────
   bot.action('renew_new', async (ctx) => {
     await ctx.answerCbQuery();
+    const plans = await getPlans();
     await ctx.editMessageText('📦 *Choose a new plan:*', {
       parse_mode:   'Markdown',
       reply_markup: { inline_keyboard: planKeyboard(plans) },
@@ -517,84 +443,6 @@ Revenue:   *${naira(res.rows[0].total)}*`
     );
   }));
 
-bot.command('syncnow', adminOnly(tid, async (ctx) => {
-    await ctx.reply('⏳ Sync started in background. Use /stockreport in 2 minutes to see results.');
-
-    // Run sync in background — don't await
-    setImmediate(async () => {
-      try {
-        const { getProvider } = require('../services/providers');
-        const freshTenantRes  = await db.query(
-          'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
-        );
-        const freshTenant = freshTenantRes.rows[0];
-
-        if (freshTenant.network_provider !== 'omada') return;
-
-        const provider = getProvider(freshTenant);
-        const result   = await provider.syncVouchersToDb(db);
-
-        const stockRes = await db.query(
-          `SELECT plan,
-                  COUNT(*) FILTER (WHERE status='unused') as unused,
-                  COUNT(*) as total
-           FROM voucher_stock
-           WHERE tenant_id=$1
-           GROUP BY plan ORDER BY plan`,
-          [tid]
-        );
-
-        const lines = stockRes.rows.length
-          ? stockRes.rows.map(r =>
-              `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
-            ).join('\n')
-          : '_No vouchers in stock yet_';
-
-        await ctx.replyWithMarkdown(
-`✅ *Sync Complete*
-
-New vouchers added: ${result.totalInserted}
-Status updated:     ${result.totalUpdated}
-
-*Current Stock:*
-${lines}`
-        );
-
-      } catch (err) {
-        logger.error('Background sync failed', { tenantId: tid, error: err.message });
-        await ctx.reply(`❌ Sync failed: ${err.message}`);
-      }
-    });
-  }));
-
-  bot.command('stockreport', adminOnly(tid, async (ctx) => {
-    const res = await db.query(
-      `SELECT plan,
-              COUNT(*) FILTER (WHERE status='unused') as unused,
-              COUNT(*) FILTER (WHERE status='used')   as used,
-              COUNT(*) as total
-       FROM voucher_stock
-       WHERE tenant_id=$1
-       GROUP BY plan ORDER BY plan`,
-      [tid]
-    );
-
-    if (!res.rows.length) {
-      return ctx.reply('No vouchers in stock. Use /syncnow to pull from Omada.');
-    }
-
-    const lines = res.rows.map(r =>
-      `• *${r.plan}*: ${r.unused} unused / ${r.used} used / ${r.total} total`
-    ).join('\n');
-
-    return ctx.replyWithMarkdown(
-`📦 *Voucher Stock Report*
-
-${lines}
-
-_Use /syncnow to refresh stock from Omada_`
-    );
-  }));
   bot.command('stock', adminOnly(tid, async (ctx) => {
     const res = await db.query(
       'SELECT COALESCE(SUM(total_gb),0) as sold FROM users WHERE tenant_id=$1',
@@ -611,14 +459,13 @@ Remaining: *${gb(total - sold)}*`
     );
   }));
 
-bot.command('online', adminOnly(tid, async (ctx) => {
+  bot.command('online', adminOnly(tid, async (ctx) => {
     const { getProvider } = require('../services/providers');
     const freshTenantRes  = await db.query(
       'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
     );
     const freshTenant = freshTenantRes.rows[0];
 
-    // DB counts
     const res = await db.query(
       'SELECT status, COUNT(*) as count FROM users WHERE tenant_id=$1 GROUP BY status',
       [tid]
@@ -655,6 +502,94 @@ Inactive: *${map['inactive'] || 0}*`
 
 Active:   *${map['active']   || 0}*
 Inactive: *${map['inactive'] || 0}*`
+    );
+  }));
+
+  // ── /syncnow ──────────────────────────────────
+  bot.command('syncnow', adminOnly(tid, async (ctx) => {
+    await ctx.reply('⏳ Sync started in background. Use /stockreport in 2 minutes to see results.');
+
+    // Capture the chat id — ctx is tied to the (already-answered) HTTP
+    // response in webhook mode, so the detached task must use bot.telegram.
+    const chatId = ctx.chat.id;
+
+    setImmediate(async () => {
+      try {
+        const { getProvider } = require('../services/providers');
+        const freshTenantRes  = await db.query(
+          'SELECT * FROM tenants WHERE tenant_id=$1', [tid]
+        );
+        const freshTenant = freshTenantRes.rows[0];
+
+        if (freshTenant.network_provider !== 'omada') {
+          return bot.telegram.sendMessage(chatId, 'This tenant is not using Omada.');
+        }
+
+        const provider = getProvider(freshTenant);
+        const result   = await provider.syncVouchersToDb(db);
+
+        const stockRes = await db.query(
+          `SELECT plan,
+                  COUNT(*) FILTER (WHERE status='unused') as unused,
+                  COUNT(*) as total
+           FROM voucher_stock
+           WHERE tenant_id=$1
+           GROUP BY plan ORDER BY plan`,
+          [tid]
+        );
+
+        const lines = stockRes.rows.length
+          ? stockRes.rows.map(r =>
+              `• *${r.plan}*: ${r.unused} unused of ${r.total} total`
+            ).join('\n')
+          : '_No vouchers in stock yet_';
+
+        await bot.telegram.sendMessage(
+          chatId,
+`✅ *Sync Complete*
+
+New vouchers added: ${result.totalInserted}
+Status updated:     ${result.totalUpdated}
+
+*Current Stock:*
+${lines}`,
+          { parse_mode: 'Markdown' }
+        );
+
+      } catch (err) {
+        logger.error('Background sync failed', { tenantId: tid, error: err.message });
+        await bot.telegram.sendMessage(chatId, `❌ Sync failed: ${err.message}`).catch(() => {});
+      }
+    });
+  }));
+
+  // ── /stockreport ──────────────────────────────
+  bot.command('stockreport', adminOnly(tid, async (ctx) => {
+    const res = await db.query(
+      `SELECT plan,
+              COUNT(*) FILTER (WHERE status='unused') as unused,
+              COUNT(*) FILTER (WHERE status='used')   as used,
+              COUNT(*) as total
+       FROM voucher_stock
+       WHERE tenant_id=$1
+       GROUP BY plan ORDER BY plan`,
+      [tid]
+    );
+
+    if (!res.rows.length) {
+      return ctx.reply('No vouchers in stock. Use /syncnow to pull from Omada.');
+    }
+
+    const lines = res.rows.map(r =>
+      `• *${r.plan}*: ${r.unused} unused / ${r.used} used / ${r.total} total`
+    ).join('\n');
+
+    return ctx.replyWithMarkdown(
+`📦 *Voucher Stock Report*
+
+${lines}
+
+_Use /syncnow to refresh stock from Omada_`
     );
   }));
 
@@ -718,14 +653,7 @@ They can get it by messaging @userinfobot.`
     const userId = ctx.from.id;
     const text   = ctx.message?.text?.trim();
     if (!text) return next();
-
-    // Skip commands
     if (text.startsWith('/')) return next();
-
-    // ── Voucher upload flow ───────────────────────
-    if (awaitingVouchers.has(userId)) {
-      return handleVoucherText(ctx, next, awaitingVouchers);
-    }
 
     // ── Sub-admin registration flow ──────────────
     if (awaitingSubAdmin.has(userId)) {
@@ -733,7 +661,7 @@ They can get it by messaging @userinfobot.`
 
       if (state.step === 'telegram_id') {
         const newId = parseInt(text);
-        if (isNaN(newId)) return ctx.reply('Invalid Telegram ID. Send a number (e.g. 5926845553):');
+        if (isNaN(newId)) return ctx.reply('Invalid Telegram ID. Send a number:');
         state.newTelegramId = newId;
         state.step = 'name';
         awaitingSubAdmin.set(userId, state);
@@ -762,47 +690,33 @@ They can get it by messaging @userinfobot.`
           [state.newTelegramId, tid, state.name, state.email, userId]
         );
 
-        // Notify new admin
         try {
           await ctx.telegram.sendMessage(
             state.newTelegramId,
-`👮 *You've been added as an admin for ${tenant.name}!*
+`👮 *You have been added as an admin for ${tenant.name}!*
 
 You now have access to:
-/sales — Today's sales
-/users — All users
-/revenue — Total revenue
-/stock — Bandwidth stock
-/online — Active users
-/addadmin — Add sub-admins
-/listadmins — View all admins`,
+/sales /users /revenue /stock /online
+/syncnow /stockreport
+/addadmin /listadmins`,
             { parse_mode: 'Markdown' }
           );
         } catch (e) {
           logger.warn('Could not notify new sub-admin', { telegramId: state.newTelegramId });
         }
 
-        logger.info('Sub-admin added', {
-          tenantId:    tid,
-          newAdminId:  state.newTelegramId,
-          addedBy:     userId,
-        });
-
         return ctx.replyWithMarkdown(
 `✅ *Sub-Admin Added!*
 
 Name:        ${state.name}
 Email:       ${state.email}
-Telegram ID: \`${state.newTelegramId}\`
-
-They have been notified on Telegram.`
+Telegram ID: \`${state.newTelegramId}\``
         );
       }
     }
 
     // ── Customer registration flow ────────────────
 
-    // Step 1 — email
     if (awaitingEmail.has(userId)) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(text)) {
@@ -822,7 +736,6 @@ They have been notified on Telegram.`
       return ctx.reply(`Got it — ${email}.\n\nNow enter your full name:`);
     }
 
-    // Step 2 — name
     if (awaitingName.has(userId)) {
       const email = awaitingName.get(userId);
       const name  = text;
@@ -862,29 +775,23 @@ async function getUser(telegramId, tenantId) {
 }
 
 function adminOnly(tenantId, handler) {
+  const SUPER_ADMIN_IDS = (process.env.SUPER_ADMIN_IDS || '')
+    .split(',').map(Number).filter(Boolean);
+
   return async (ctx) => {
     const userId = ctx.from?.id;
-
-    // Super admin always has access
     if (SUPER_ADMIN_IDS.includes(userId)) return handler(ctx);
 
-    // Always fetch fresh from DB
     const tenantRes = await db.query(
       'SELECT telegram_id FROM tenants WHERE tenant_id=$1',
       [tenantId]
     );
+    if (tenantRes.rows[0]?.telegram_id == userId) return handler(ctx);
 
-    const ownerTelegramId = tenantRes.rows[0]?.telegram_id;
-
-    // Use == not === — DB may return string, ctx returns number
-    if (ownerTelegramId == userId) return handler(ctx);
-
-    // Check sub-admins
     const adminRes = await db.query(
       'SELECT id FROM admins WHERE telegram_id=$1 AND tenant_id=$2 AND active=true',
       [userId, tenantId]
     );
-
     if (!adminRes.rows.length) return ctx.reply('⛔ Admin access only.');
     return handler(ctx);
   };

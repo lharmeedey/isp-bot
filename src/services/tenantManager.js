@@ -6,6 +6,12 @@ const logger                 = require('./logger');
 const { decrypt }            = require('./encryption');
 const { webhookLimiter }     = require('./rateLimiter');
 const { clearProviderCache } = require('./providers');
+const {
+  parseMetadata,
+  planGb,
+  verifyPayment,
+  computeExpiry,
+} = require('./paymentLogic');
 
 const tenantBots = new Map();
 
@@ -166,8 +172,7 @@ function createWebhookRouter(masterApp) {
 
         logger.info('Webhook signature check', {
           tenantId,
-          match:         signatureMatch,
-          secretPreview: paystackSecret?.slice(0, 15),
+          match: signatureMatch,
         });
 
         if (!signatureMatch) {
@@ -175,15 +180,17 @@ function createWebhookRouter(masterApp) {
           return res.sendStatus(401);
         }
 
-        // Acknowledge immediately
-        res.sendStatus(200);
-
         const event = JSON.parse(req.body);
         logger.info('Paystack event received', { tenantId, event: event.event });
 
         if (event.event === 'charge.success') {
+          // Process BEFORE acknowledging. If this throws, we return 500 so
+          // Paystack retries — handlePayment is idempotent (dedupe on
+          // purchases.reference), so a retry never double-provisions.
           await handlePayment(entry.bot, entry.tenant, event.data);
         }
+
+        res.sendStatus(200);
 
       } catch (err) {
         logger.error('Payment webhook error', { tenantId, error: err.message, stack: err.stack });
@@ -211,14 +218,14 @@ function createWebhookRouter(masterApp) {
 }
 
 async function handlePayment(bot, tenant, data) {
-  const { telegram_id, plan, email } = data.metadata || {};
+  const meta = parseMetadata(data.metadata);
 
-  if (!telegram_id || !plan || !email) {
+  if (!meta.valid) {
     logger.error('Payment missing metadata', { metadata: data.metadata });
     return;
   }
 
-  const tid      = Number(telegram_id);
+  const { telegramId: tid, plan, email } = meta;
   const tenantId = tenant.tenant_id;
 
   logger.info('Processing payment', { tid, plan, email, tenantId, reference: data.reference });
@@ -233,7 +240,7 @@ async function handlePayment(bot, tenant, data) {
     return;
   }
 
- // Check tenant-specific plans first, fall back to global
+// Check tenant-specific plans first, fall back to global
   let planObj;
   const tenantPlansRes = await db.query(
     `SELECT * FROM tenant_plans
@@ -252,17 +259,59 @@ async function handlePayment(bot, tenant, data) {
       validity:       tp.validity,
       omadaProfileId: tp.omada_profile_id,
     };
+    logger.info('Using tenant-specific plan', {
+      tenantId,
+      plan:            planObj.label,
+      omadaProfileId:  planObj.omadaProfileId,
+    });
   } else {
     const globalPlans = JSON.parse(process.env.PLANS || '[]');
     planObj = globalPlans.find(p => p.label === plan);
+    logger.info('Using global plan', {
+      tenantId,
+      plan:            planObj?.label,
+      omadaProfileId:  planObj?.omadaProfileId,
+    });
   }
 
-  
-  const planGb  = planObj?.gb || 0;
-  const days    = planObj?.validity?.includes('7') ? 7 : 30;
+  const gbForPlan = planGb(planObj);
 
-  const expiry = new Date();
-  expiry.setDate(expiry.getDate() + days);
+  // ── Verify the amount paid matches the plan price ──
+  const check = verifyPayment(planObj, data.amount);
+
+  if (!check.ok && check.reason === 'unknown_plan') {
+    logger.error('Payment for unknown plan — refusing to provision', {
+      tenantId, plan, reference: data.reference,
+    });
+    try {
+      await bot.telegram.sendMessage(
+        tid,
+        `⚠️ We received your payment but couldn't match the plan. ` +
+        `Contact /support with reference: ${data.reference}`
+      );
+    } catch (_) {}
+    return;
+  }
+
+  if (!check.ok && check.reason === 'amount_mismatch') {
+    logger.error('Payment amount mismatch — refusing to provision', {
+      tenantId,
+      plan,
+      expectedKobo: check.expectedKobo,
+      paidKobo:     check.paidKobo,
+      reference:    data.reference,
+    });
+    try {
+      await bot.telegram.sendMessage(
+        tid,
+        `⚠️ The amount paid (${(check.paidKobo / 100).toLocaleString()}) does not match ` +
+        `the price of the ${plan} plan. Contact /support with reference: ${data.reference}`
+      );
+    } catch (_) {}
+    return;
+  }
+
+  const expiry = computeExpiry(planObj.validity);
 
   // Always fetch fresh tenant from DB for provider
   const freshTenantRes = await db.query(
@@ -338,7 +387,7 @@ async function handlePayment(bot, tenant, data) {
        SET plan=$1, remaining_gb=$2, total_gb=$3,
            expiry=$4, status='active', last_sync=NOW()
        WHERE telegram_id=$5 AND tenant_id=$6`,
-      [plan, planGb, planGb, expiry.toISOString().slice(0, 10), tid, tenantId]
+      [plan, gbForPlan, gbForPlan, expiry.toISOString().slice(0, 10), tid, tenantId]
     );
 
     await client.query(
@@ -347,11 +396,30 @@ async function handlePayment(bot, tenant, data) {
       [tid, tenantId, email, plan, data.amount / 100, data.reference]
     );
 
-    await client.query(
+    const voucherInsert = await client.query(
       `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, omada_voucher_id, reference)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (code) DO UPDATE SET
+         telegram_id      = EXCLUDED.telegram_id,
+         tenant_id        = EXCLUDED.tenant_id,
+         email            = EXCLUDED.email,
+         plan             = EXCLUDED.plan,
+         omada_voucher_id = EXCLUDED.omada_voucher_id,
+         reference        = EXCLUDED.reference
+       RETURNING xmax = 0 AS inserted`,
       [tid, tenantId, email, plan, voucherCode, omadaVoucherId, data.reference]
     );
+
+    // A conflict means this code was already delivered before — a genuine
+    // double-issue. We still complete the payment (customer paid, stock was
+    // already consumed), but flag it loudly for investigation.
+    if (!voucherInsert.rows[0]?.inserted) {
+      logger.warn('Voucher code collision — code already delivered previously', {
+        tenantId,
+        voucherCode,
+        reference: data.reference,
+      });
+    }
 
     await client.query('COMMIT');
 
@@ -395,6 +463,11 @@ _Connect to the WiFi network and enter your password on the login page._`;
     } catch (e) {
       logger.error('Could not notify user of failure', { tid });
     }
+
+    // Re-throw so the webhook responds non-2xx and Paystack retries.
+    // handlePayment is idempotent (dedupe on purchases.reference), so a retry
+    // won't double-provision.
+    throw err;
 
   } finally {
     client.release();

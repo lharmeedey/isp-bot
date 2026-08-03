@@ -79,9 +79,11 @@ masterBot.command('testprovider', superAdminOnly(superAdmin.testProvider));
 masterBot.action(/^deactivate_.+$/,  superAdminOnly(superAdmin.handleDeactivateCallback));
 masterBot.action(/^provider_.+$/,    superAdminOnly(superAdmin.handleProviderCallback));
 masterBot.action(/^omadatype_.+$/,   superAdminOnly(superAdmin.handleOmadaTypeCallback));
-masterBot.command('manageplans', superAdminOnly(superAdmin.managePlans));
-masterBot.command('setplan',     superAdminOnly(superAdmin.setPlan));
-masterBot.command('resetplans',  superAdminOnly(superAdmin.resetPlans));
+masterBot.command('manageplans',     superAdminOnly(superAdmin.managePlans));
+masterBot.command('setplan',         superAdminOnly(superAdmin.setPlan));
+masterBot.command('resetplans',      superAdminOnly(superAdmin.resetPlans));
+masterBot.command('tenantstatus',    superAdminOnly(superAdmin.tenantStatus));
+masterBot.command('getheartbeatkey', superAdminOnly(superAdmin.getHeartbeatKey));
 
 masterBot.on('text', (ctx, next) =>
   superAdmin.handleSuperAdminText(ctx, next)

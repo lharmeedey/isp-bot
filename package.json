@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node src/bot.js",
     "migrate": "node src/services/migrate.js",
+    "rotate": "node src/services/rotateKey.js",
+    "test": "node --test",
     "format": "prettier --write \"src/**/*.js\"",
     "format:check": "prettier --check \"src/**/*.js\""
   },

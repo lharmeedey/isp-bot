@@ -260,6 +260,70 @@ Note: ${notes[type]}`,
   );
 }
 
+async function tenantStatus(ctx) {
+  const res = await db.query(
+    `SELECT tenant_id, name, network_provider,
+            omada_url, controller_online,
+            controller_version, last_heartbeat,
+            EXTRACT(EPOCH FROM (NOW() - last_heartbeat)) as seconds_ago
+     FROM tenants
+     WHERE active = true
+     ORDER BY name`
+  );
+
+  if (!res.rows.length) return ctx.reply('No active tenants.');
+
+  const lines = res.rows.map(t => {
+    const secs     = Math.floor(t.seconds_ago || 999999);
+    const mins     = Math.floor(secs / 60);
+    const lastSeen = !t.last_heartbeat
+      ? 'never checked'
+      : mins < 1 ? 'just now' : `${mins}m ago`;
+
+    const status = !t.last_heartbeat
+      ? 'No heartbeat'
+      : t.controller_online ? 'Online' : 'Offline';
+
+    const provider = t.network_provider || 'none';
+    const version  = t.controller_version || 'unknown';
+
+    return `${t.name} (${provider})\nStatus: ${status} | v${version} | ${lastSeen}`;
+  }).join('\n\n');
+
+  return ctx.reply(`Tenant Controller Status\n\n${lines}\n\nChecked every 5 minutes`);
+}
+
+async function getHeartbeatKey(ctx) {
+  const parts    = ctx.message.text.split(' ');
+  const tenantId = parts[1];
+
+  if (!tenantId) return ctx.reply('Usage: /getheartbeatkey tenant_id');
+
+  const res = await db.query(
+    'SELECT name, heartbeat_secret FROM tenants WHERE tenant_id=$1',
+    [tenantId]
+  );
+
+  if (!res.rows.length) return ctx.reply('Tenant not found.');
+
+  const { name, heartbeat_secret } = res.rows[0];
+
+  if (!heartbeat_secret) {
+    return ctx.reply('No heartbeat key generated for this tenant. Run migration first.');
+  }
+
+  return ctx.reply(
+`Heartbeat Key
+
+Tenant:    ${name}
+Tenant ID: ${tenantId}
+Secret:    ${heartbeat_secret}
+
+Heartbeat URL:
+${process.env.WEBHOOK_URL}/heartbeat`
+  );
+}
+
 // ── Multi-step text handler ────────────────────
 async function handleSuperAdminText(ctx, next) {
   const userId = ctx.from.id;
@@ -791,4 +855,6 @@ module.exports = {
   managePlans,
   setPlan,
   resetPlans,
+  tenantStatus,
+  getHeartbeatKey,
 };

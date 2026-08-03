@@ -99,7 +99,26 @@ async function migrate() {
       created_at       TIMESTAMP DEFAULT NOW(),
       UNIQUE (tenant_id, label)
     );
+
+    CREATE TABLE IF NOT EXISTS voucher_stock (
+      id               SERIAL PRIMARY KEY,
+      tenant_id        VARCHAR(50) NOT NULL,
+      plan             VARCHAR(50),
+      omada_profile_id VARCHAR(100),
+      code             VARCHAR(100) NOT NULL,
+      omada_voucher_id VARCHAR(100),
+      status           VARCHAR(20) DEFAULT 'unused',
+      omada_status     INTEGER,
+      email            VARCHAR(255),
+      reference        VARCHAR(100),
+      assigned_at      TIMESTAMP,
+      last_synced      TIMESTAMP,
+      created_at       TIMESTAMP DEFAULT NOW(),
+      UNIQUE (tenant_id, code)
+    );
   `);
+  // NOTE: indexes on voucher_stock are created near the end of this file,
+  // AFTER the ALTER loop guarantees omada_profile_id exists on legacy tables.
 
   console.log('✅ Tables created/verified');
 
@@ -113,10 +132,13 @@ async function migrate() {
     { name: 'omada_client_secret', def: 'VARCHAR(200)' },
     { name: 'omada_admin_username', def: 'VARCHAR(200)' },
     { name: 'omada_admin_password', def: 'VARCHAR(200)' },
+    { name: 'omada_controller_type', def: "VARCHAR(20) DEFAULT 'software'" },
+    { name: 'omada_cloud_cert',    def: 'TEXT' },
+    { name: 'omada_cloud_key',     def: 'TEXT' },
     { name: 'mikrotik_url',        def: 'VARCHAR(200)' },
     { name: 'mikrotik_username',   def: 'VARCHAR(200)' },
     { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
-  
+
   ];
 
   
@@ -145,15 +167,16 @@ async function migrate() {
     console.log('✅ Added omada columns to vouchers');
   }
 
-  // Add omada_status and last_synced to voucher_stock if missing
-const stockCols = [
-  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
-  { name: 'email', def: 'VARCHAR(255)' },
-  { name: 'reference', def: 'VARCHAR(100)' },
-  { name: 'assigned_at', def: 'TIMESTAMP' },
-  { name: 'omada_status', def: 'INTEGER' },
-  { name: 'last_synced', def: 'TIMESTAMP' },
-];
+  // Add missing columns to voucher_stock for existing DBs
+  const stockCols = [
+    { name: 'omada_profile_id', def: 'VARCHAR(100)' },
+    { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
+    { name: 'email', def: 'VARCHAR(255)' },
+    { name: 'reference', def: 'VARCHAR(100)' },
+    { name: 'assigned_at', def: 'TIMESTAMP' },
+    { name: 'omada_status', def: 'INTEGER' },
+    { name: 'last_synced', def: 'TIMESTAMP' },
+  ];
 
   for (const col of stockCols) {
     const exists = await db.query(`
@@ -167,29 +190,58 @@ const stockCols = [
     }
   }
 
-  // Add missing voucher_stock columns
-const voucherStockCols = [
-  { name: 'omada_voucher_id', def: 'VARCHAR(100)' },
-  { name: 'email', def: 'VARCHAR(255)' },
-  { name: 'reference', def: 'VARCHAR(100)' },
-  { name: 'assigned_at', def: 'TIMESTAMP' }
-];
-
-for (const col of voucherStockCols) {
-  const exists = await db.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name='voucher_stock'
-      AND column_name=$1
-  `, [col.name]);
-
-  if (!exists.rows.length) {
-    await db.query(
-      `ALTER TABLE voucher_stock ADD COLUMN ${col.name} ${col.def}`
-    );
-    console.log(`✅ Added voucher_stock.${col.name}`);
+  // Ensure the UNIQUE (tenant_id, code) constraint exists — the ON CONFLICT
+  // in the voucher sync depends on it. Legacy tables may have UNIQUE(code) only.
+  const uniqExists = await db.query(`
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'voucher_stock'::regclass
+      AND contype = 'u'
+      AND conname = 'voucher_stock_tenant_id_code_key'
+  `);
+  if (!uniqExists.rows.length) {
+    // De-dupe any rows that would violate the new constraint, keeping the lowest id
+    await db.query(`
+      DELETE FROM voucher_stock a
+      USING voucher_stock b
+      WHERE a.tenant_id = b.tenant_id
+        AND a.code = b.code
+        AND a.id > b.id
+    `);
+    await db.query(`
+      ALTER TABLE voucher_stock
+        ADD CONSTRAINT voucher_stock_tenant_id_code_key UNIQUE (tenant_id, code)
+    `);
+    console.log('✅ Added UNIQUE (tenant_id, code) to voucher_stock');
   }
-}
+
+  // Ensure the lookup indexes exist on legacy voucher_stock tables
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_lookup
+      ON voucher_stock (tenant_id, omada_profile_id, status)
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_voucher_stock_plan
+      ON voucher_stock (tenant_id, plan, status)
+  `);
+
+  // ── Self-heal: mark any already-delivered code as 'used' in stock ──
+  // Guards against the historic bug where a sync reset delivered codes back
+  // to 'unused', which caused the same code to be handed out twice.
+  const reconciled = await db.query(`
+    UPDATE voucher_stock s
+    SET status = 'used',
+        assigned_at = COALESCE(s.assigned_at, NOW())
+    WHERE s.status = 'unused'
+      AND EXISTS (
+        SELECT 1 FROM vouchers v
+        WHERE v.code = s.code AND v.tenant_id = s.tenant_id
+      )
+  `);
+  if (reconciled.rowCount) {
+    console.log(`✅ Reconciled ${reconciled.rowCount} already-delivered voucher(s) to 'used'`);
+  }
+
   console.log('✅ Migration complete');
   process.exit(0);
 }
