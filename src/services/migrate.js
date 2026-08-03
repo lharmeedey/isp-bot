@@ -225,6 +225,23 @@ async function migrate() {
       ON voucher_stock (tenant_id, plan, status)
   `);
 
+  // ── Self-heal: mark any already-delivered code as 'used' in stock ──
+  // Guards against the historic bug where a sync reset delivered codes back
+  // to 'unused', which caused the same code to be handed out twice.
+  const reconciled = await db.query(`
+    UPDATE voucher_stock s
+    SET status = 'used',
+        assigned_at = COALESCE(s.assigned_at, NOW())
+    WHERE s.status = 'unused'
+      AND EXISTS (
+        SELECT 1 FROM vouchers v
+        WHERE v.code = s.code AND v.tenant_id = s.tenant_id
+      )
+  `);
+  if (reconciled.rowCount) {
+    console.log(`✅ Reconciled ${reconciled.rowCount} already-delivered voucher(s) to 'used'`);
+  }
+
   console.log('✅ Migration complete');
   process.exit(0);
 }

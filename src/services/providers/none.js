@@ -15,6 +15,11 @@ class NoneProvider {
       const res = await client.query(
         `SELECT id, code FROM voucher_stock
           WHERE tenant_id=$1 AND plan=$2 AND status='unused'
+            AND NOT EXISTS (
+              SELECT 1 FROM vouchers v
+              WHERE v.code = voucher_stock.code
+                AND v.tenant_id = voucher_stock.tenant_id
+            )
           ORDER BY id ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,

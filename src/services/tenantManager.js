@@ -393,11 +393,30 @@ async function handlePayment(bot, tenant, data) {
       [tid, tenantId, email, plan, data.amount / 100, data.reference]
     );
 
-    await client.query(
+    const voucherInsert = await client.query(
       `INSERT INTO vouchers (telegram_id, tenant_id, email, plan, code, omada_voucher_id, reference)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (code) DO UPDATE SET
+         telegram_id      = EXCLUDED.telegram_id,
+         tenant_id        = EXCLUDED.tenant_id,
+         email            = EXCLUDED.email,
+         plan             = EXCLUDED.plan,
+         omada_voucher_id = EXCLUDED.omada_voucher_id,
+         reference        = EXCLUDED.reference
+       RETURNING xmax = 0 AS inserted`,
       [tid, tenantId, email, plan, voucherCode, omadaVoucherId, data.reference]
     );
+
+    // A conflict means this code was already delivered before — a genuine
+    // double-issue. We still complete the payment (customer paid, stock was
+    // already consumed), but flag it loudly for investigation.
+    if (!voucherInsert.rows[0]?.inserted) {
+      logger.warn('Voucher code collision — code already delivered previously', {
+        tenantId,
+        voucherCode,
+        reference: data.reference,
+      });
+    }
 
     await client.query('COMMIT');
 

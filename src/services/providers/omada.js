@@ -438,6 +438,11 @@ class OmadaProvider {
             WHERE tenant_id=$1
               AND status='unused'
               AND ($2::text IS NULL OR omada_profile_id=$2 OR plan=$3)
+              AND NOT EXISTS (
+                SELECT 1 FROM vouchers v
+                WHERE v.code = voucher_stock.code
+                  AND v.tenant_id = voucher_stock.tenant_id
+              )
             ORDER BY id ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED`,
@@ -559,7 +564,11 @@ class OmadaProvider {
 
       return {
         success:        true,
-        message:        `Connected. ${groups.length} group(s): ${groups.map(g => `${g.name} (${g.unusedCount} unused)`).join(', ')}${sessionStatus}`,
+        message:        `Connected. ${groups.length} group(s):\n` +
+          groups.map(g =>
+            `• ${g.name} (${g.unusedCount} unused)\n  profile id: ${g.id}`
+          ).join('\n') +
+          sessionStatus,
         controllerType: this.controllerType,
       };
     } catch (err) {
