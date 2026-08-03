@@ -233,7 +233,7 @@ async function handlePayment(bot, tenant, data) {
     return;
   }
 
- // Check tenant-specific plans first, fall back to global
+// Check tenant-specific plans first, fall back to global
   let planObj;
   const tenantPlansRes = await db.query(
     `SELECT * FROM tenant_plans
@@ -252,9 +252,19 @@ async function handlePayment(bot, tenant, data) {
       validity:       tp.validity,
       omadaProfileId: tp.omada_profile_id,
     };
+    logger.info('Using tenant-specific plan', {
+      tenantId,
+      plan:            planObj.label,
+      omadaProfileId:  planObj.omadaProfileId,
+    });
   } else {
     const globalPlans = JSON.parse(process.env.PLANS || '[]');
     planObj = globalPlans.find(p => p.label === plan);
+    logger.info('Using global plan', {
+      tenantId,
+      plan:            planObj?.label,
+      omadaProfileId:  planObj?.omadaProfileId,
+    });
   }
 
   

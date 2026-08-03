@@ -219,8 +219,29 @@ class OmadaProvider {
   // 2. For each group, fetch all vouchers via session API
   // 3. Insert unused ones into voucher_stock
   async syncVouchersToDb(db) {
+  
     const groups = await this.getVoucherGroups();
-    const plans  = JSON.parse(process.env.PLANS || '[]');
+
+    // Load tenant-specific plans first, fall back to global
+    const tenantPlansRes = await db.query(
+      `SELECT * FROM tenant_plans
+       WHERE tenant_id=$1 AND active=true`,
+      [this.tenant.tenant_id]
+    );
+
+    let plans;
+    if (tenantPlansRes.rows.length) {
+      plans = tenantPlansRes.rows.map(p => ({
+        id:             p.plan_id,
+        label:          p.label,
+        price:          parseFloat(p.price),
+        gb:             parseFloat(p.gb),
+        validity:       p.validity,
+        omadaProfileId: p.omada_profile_id,
+      }));
+    } else {
+      plans = JSON.parse(process.env.PLANS || '[]');
+    }
 
     let totalInserted = 0;
     let totalUpdated  = 0;
