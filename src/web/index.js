@@ -17,6 +17,8 @@ const errorHandler   = require('./middleware/errorHandler');
 const authRoutes       = require('./routes/auth.routes');
 const onboardingRoutes = require('./routes/onboarding.routes');
 const dashboardRoutes  = require('./routes/dashboard.routes');
+const storefrontRoutes = require('./routes/storefront.routes');
+const checkoutRoutes   = require('./routes/checkout.routes');
 
 function buildApiRouter() {
   const router = express.Router();
@@ -30,6 +32,8 @@ function buildApiRouter() {
   router.use('/auth', authRoutes);
   router.use('/onboarding', onboardingRoutes);
   router.use('/dashboard', dashboardRoutes);
+  router.use('/store', storefrontRoutes);
+  router.use('/checkout', checkoutRoutes);
 
   // JSON error envelope — must be registered last.
   router.use(errorHandler);

@@ -139,6 +139,30 @@ async function migrate() {
       revoked_at  TIMESTAMP,
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    -- ── Web storefront: end-customer accounts (buyers). Per-tenant; email
+    --    unique WITHIN a tenant. Distinct from the telegram-keyed users table. ──
+    CREATE TABLE IF NOT EXISTS customers (
+      id            SERIAL PRIMARY KEY,
+      tenant_id     VARCHAR(50) NOT NULL,
+      email         VARCHAR(255) NOT NULL,
+      password_hash TEXT NOT NULL,
+      name          VARCHAR(100),
+      active        BOOLEAN DEFAULT true,
+      created_at    TIMESTAMP DEFAULT NOW(),
+      last_login    TIMESTAMP,
+      UNIQUE (tenant_id, email)
+    );
+
+    -- ── Web storefront: rotating refresh tokens for customers ──
+    CREATE TABLE IF NOT EXISTS customer_refresh_tokens (
+      id          SERIAL PRIMARY KEY,
+      customer_id INTEGER NOT NULL,
+      token_hash  TEXT NOT NULL,
+      expires_at  TIMESTAMP NOT NULL,
+      revoked_at  TIMESTAMP,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
   `);
   // NOTE: indexes on voucher_stock are created near the end of this file,
   // AFTER the ALTER loop guarantees omada_profile_id exists on legacy tables.
@@ -215,6 +239,21 @@ async function migrate() {
     }
   }
 
+  // ── Web storefront: attribute purchases/vouchers to a web customer ──
+  // Additive & nullable. The bot path keeps writing telegram_id (customer_id
+  // NULL); the web path writes customer_id (telegram_id NULL). Both coexist.
+  for (const table of ['purchases', 'vouchers']) {
+    const exists = await db.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name=$1 AND column_name='customer_id'
+    `, [table]);
+
+    if (!exists.rows.length) {
+      await db.query(`ALTER TABLE ${table} ADD COLUMN customer_id INTEGER`);
+      console.log(`✅ Added column ${table}.customer_id`);
+    }
+  }
+
   // Ensure the UNIQUE (tenant_id, code) constraint exists — the ON CONFLICT
   // in the voucher sync depends on it. Legacy tables may have UNIQUE(code) only.
   const uniqExists = await db.query(`
@@ -256,6 +295,12 @@ async function migrate() {
   `);
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_refresh_operator ON refresh_tokens (operator_id)
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_customers_tenant ON customers (tenant_id)
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_cust_refresh_customer ON customer_refresh_tokens (customer_id)
   `);
 
   // ── Self-heal: mark any already-delivered code as 'used' in stock ──

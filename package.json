@@ -5,6 +5,7 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
+    "api": "node src/web/server.js",
     "migrate": "node src/services/migrate.js",
     "rotate": "node src/services/rotateKey.js",
     "test": "node --test",
