@@ -101,6 +101,19 @@ async function provisionForCustomer({ tenantId, customerId, plan, email, referen
     throw e;
   }
 
+  // Safety net (Omada): refuse to issue if this plan isn't linked to a voucher
+  // group. Without an omada_profile_id the provider's stock claim falls back to
+  // ANY unused voucher and would hand out the WRONG plan's code. Better to fail
+  // loudly (money already captured, flagged for support) than deliver a
+  // mismatched voucher. Map the plan's profile in onboarding to resolve.
+  if (freshTenant.network_provider === 'omada' && !planObj.omadaProfileId) {
+    const e = new Error('This plan is not linked to a voucher group yet. Please contact support.');
+    e.status = 409;
+    e.reason = 'plan_unmapped';
+    logger.error('Web provisioning refused: plan has no omada_profile_id', { tenantId, plan, reference });
+    throw e;
+  }
+
   clearProviderCache(tenantId);
   const provider = getProvider(freshTenant);
 

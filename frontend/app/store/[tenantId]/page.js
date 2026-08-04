@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { customerApi, getAccessToken } from '@/lib/customerApi';
+import { customerApi, getAccessToken, clearTokens } from '@/lib/customerApi';
 import PlanGrid from '@/components/store/PlanGrid';
 import Alert from '@/components/Alert';
 import { GradientHeader, Skeleton, Toast } from '@/components/ui';
@@ -42,18 +42,24 @@ export default function StoreLanding() {
   }, [tenantId]);
 
   async function onBuy(plan) {
-    if (!getAccessToken()) {
-      // Remember intent and send to login.
+    // Send unauthenticated buyers (or those with a dead session) to login,
+    // remembering the plan so checkout resumes automatically afterwards.
+    function goLogin() {
       try { window.sessionStorage.setItem('buy_intent', plan.label); } catch {}
+      clearTokens();
       router.push(`/store/${tenantId}/login?next=buy`);
-      return;
     }
+
+    if (!getAccessToken()) { goLogin(); return; }
+
     setBusyLabel(plan.label);
     setError('');
     try {
       const { authorizationUrl } = await customerApi.checkout(plan.label);
       window.location.href = authorizationUrl; // hand off to Paystack
     } catch (err) {
+      // Expired/invalid session — bounce to login instead of dead-ending.
+      if (err.status === 401) { goLogin(); return; }
       setError(err.message || 'Could not start checkout.');
       setBusyLabel('');
     }
