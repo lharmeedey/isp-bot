@@ -279,6 +279,15 @@ async function migrate() {
     console.log('✅ Added UNIQUE (tenant_id, code) to voucher_stock');
   }
 
+  // Drop the legacy GLOBAL unique on code alone. Voucher codes are only unique
+  // PER TENANT (multiple tenants can share one Omada controller and thus pull
+  // the same codes); a global UNIQUE(code) makes the second tenant's sync fail
+  // with a duplicate-key error, starving its stock. The correct constraint is
+  // UNIQUE(tenant_id, code), added just above.
+  await db.query(`
+    ALTER TABLE voucher_stock DROP CONSTRAINT IF EXISTS voucher_stock_code_key
+  `);
+
   // Ensure the lookup indexes exist on legacy voucher_stock tables
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_voucher_stock_lookup

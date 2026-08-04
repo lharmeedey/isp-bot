@@ -46,7 +46,8 @@ async function loadPaystackSecret(tenantId) {
   if (!row.rows.length) return null;
   const raw = row.rows[0].paystack_secret;
   if (!raw) return null;
-  return decrypt(raw) || raw;
+  const decrypted = decrypt(raw) || raw;
+  return decrypted ? decrypted.trim() : null;
 }
 
 // Where Paystack sends the customer back after payment.

@@ -19,7 +19,12 @@ export default function StoreLanding() {
   const [error, setError] = useState('');
   const [busyLabel, setBusyLabel] = useState('');
   const [toast, setToast] = useState('');
-  const signedIn = typeof window !== 'undefined' && !!getAccessToken();
+  const [signedIn, setSignedIn] = useState(false);
+
+  // Defer auth check to client-side only to avoid hydration mismatch.
+  useEffect(() => {
+    setSignedIn(!!getAccessToken());
+  }, []);
 
   useEffect(() => {
     (async () => {

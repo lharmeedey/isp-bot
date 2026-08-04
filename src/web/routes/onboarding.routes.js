@@ -34,8 +34,8 @@ router.put('/provider', async (req, res, next) => {
     const fields = {
       network_provider: provider,
       // Paystack (both required to actually take payments, but allow partial save)
-      paystack_secret:  b.paystackSecret  !== undefined ? encrypt(b.paystackSecret)  : undefined,
-      paystack_public:  b.paystackPublic  !== undefined ? b.paystackPublic           : undefined,
+      paystack_secret:  b.paystackSecret  !== undefined ? encrypt(String(b.paystackSecret).trim())  : undefined,
+      paystack_public:  b.paystackPublic  !== undefined ? String(b.paystackPublic).trim()           : undefined,
     };
 
     if (provider === 'omada') {
