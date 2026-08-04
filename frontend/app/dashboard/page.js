@@ -155,7 +155,7 @@ export default function DashboardPage() {
         )}
 
         {/* Plan management */}
-        <PlanManager />
+        <PlanManager provider={provider} />
 
         {/* Users */}
         <Card>
