@@ -1,12 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { customerApi, getAccessToken, clearTokens } from '@/lib/customerApi';
+import { useCustomer } from '@/lib/useCustomer';
 import PlanGrid from '@/components/store/PlanGrid';
+import StoreShell from '@/components/store/StoreShell';
+import HeroSlider from '@/components/store/HeroSlider';
+import SliderBoundary from '@/components/store/SliderBoundary';
 import Alert from '@/components/Alert';
-import { GradientHeader, Skeleton, Toast } from '@/components/ui';
+import { Skeleton, Toast } from '@/components/ui';
 
 // Public storefront landing: shows a tenant's plans. Browsing needs no login;
 // buying does — an unauthenticated "Get this plan" bounces to login and returns.
@@ -14,17 +18,15 @@ export default function StoreLanding() {
   const { tenantId } = useParams();
   const router = useRouter();
 
+  // Non-redirecting auth: gives us `me`/`logout` when signed in, silent otherwise.
+  const { me, logout } = useCustomer(tenantId, { redirect: false });
+  const signedIn = !!me;
+
   const [info, setInfo]   = useState(null);
   const [plans, setPlans] = useState(null);
   const [error, setError] = useState('');
   const [busyLabel, setBusyLabel] = useState('');
   const [toast, setToast] = useState('');
-  const [signedIn, setSignedIn] = useState(false);
-
-  // Defer auth check to client-side only to avoid hydration mismatch.
-  useEffect(() => {
-    setSignedIn(!!getAccessToken());
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -40,6 +42,17 @@ export default function StoreLanding() {
       }
     })();
   }, [tenantId]);
+
+  // Data balance = sum of GB across UNUSED vouchers (web customers have no
+  // stored GB counter, so it's derived from the plan catalogue).
+  const balanceGb = useMemo(() => {
+    if (!signedIn || !plans || !me?.vouchers) return null;
+    const gbByPlan = Object.fromEntries(plans.map((p) => [p.label, Number(p.gb) || 0]));
+    const total = me.vouchers
+      .filter((v) => v.status === 'unused')
+      .reduce((sum, v) => sum + (gbByPlan[v.plan] || 0), 0);
+    return Math.round(total * 100) / 100;
+  }, [signedIn, plans, me]);
 
   async function onBuy(plan) {
     // Send unauthenticated buyers (or those with a dead session) to login,
@@ -58,7 +71,6 @@ export default function StoreLanding() {
       const { authorizationUrl } = await customerApi.checkout(plan.label);
       window.location.href = authorizationUrl; // hand off to Paystack
     } catch (err) {
-      // Expired/invalid session — bounce to login instead of dead-ending.
       if (err.status === 401) { goLogin(); return; }
       setError(err.message || 'Could not start checkout.');
       setBusyLabel('');
@@ -66,38 +78,26 @@ export default function StoreLanding() {
   }
 
   return (
-    <main className="min-h-screen">
-      <GradientHeader
-        title={info ? info.name : 'Wi-Fi Store'}
-        subtitle="Fast, affordable data plans. Pay securely and get your voucher instantly."
-      >
-        <div className="flex flex-wrap gap-2">
-          {signedIn ? (
-            <Link href={`/store/${tenantId}/account`}
-                  className="rounded-xl bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/25">
-              My account →
-            </Link>
-          ) : (
-            <>
-              <Link href={`/store/${tenantId}/login`}
-                    className="rounded-xl bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/25">
-                Sign in
-              </Link>
-              <Link href={`/store/${tenantId}/register`}
-                    className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-brand-700 shadow-sm transition hover:-translate-y-0.5">
-                Create account
-              </Link>
-            </>
-          )}
-        </div>
-      </GradientHeader>
+    <StoreShell
+      tenantId={tenantId}
+      businessName={info?.name}
+      signedIn={signedIn}
+      customer={me?.customer}
+      onSignOut={logout}
+      balanceGb={balanceGb}
+    >
+      <SliderBoundary>
+        <HeroSlider plans={plans || []} balanceGb={balanceGb} signedIn={signedIn} onBuy={onBuy} />
+      </SliderBoundary>
 
-      <div className="mx-auto max-w-5xl px-4 py-10">
+      <div className="mt-10">
         {error && <div className="mb-6"><Alert type="error">{error}</Alert></div>}
 
         {info && info.active === false && (
           <div className="mb-6"><Alert type="info">This store isn&apos;t taking orders yet. Please check back soon.</Alert></div>
         )}
+
+        <h2 className="mb-4 text-lg font-bold text-slate-900 dark:text-slate-100">Choose a plan</h2>
 
         {plans === null ? (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -117,6 +117,6 @@ export default function StoreLanding() {
       </div>
 
       <Toast message={toast} tone="info" onClose={() => setToast('')} />
-    </main>
+    </StoreShell>
   );
 }

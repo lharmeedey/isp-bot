@@ -7,6 +7,7 @@ const db     = require('../../services/db');
 const logger = require('../../services/logger');
 const { encrypt } = require('../../services/encryption');
 const { getProvider, clearProviderCache } = require('../../services/providers');
+const { generateWebhookSecret, sendPurchaseWebhook } = require('../services/webhook');
 const authRequired = require('../middleware/authRequired');
 
 router.use(authRequired);
@@ -99,6 +100,74 @@ router.post('/test', async (req, res, next) => {
     res.json(result); // { success, message, controllerType? }
   } catch (err) {
     // A failed controller test is a normal outcome, not a server error.
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// ── PUT /api/onboarding/webhook ──────────────────────────────
+// Save the outbound post-purchase webhook URL. Generates + encrypts a signing
+// secret on first save; returns the plaintext secret ONCE so the operator can
+// configure their receiver. Pass an empty/null url to clear the webhook.
+router.put('/webhook', async (req, res, next) => {
+  try {
+    const tenantId = req.tenantId;
+    const url = req.body ? req.body.purchaseWebhookUrl : undefined;
+
+    if (url) {
+      let u;
+      try { u = new URL(url); } catch { return res.status(400).json({ error: 'Invalid URL' }); }
+      if (u.protocol !== 'https:') return res.status(400).json({ error: 'Webhook URL must be https' });
+    }
+
+    // Mint a secret on first save (when a URL is set and none exists yet).
+    const cur = await db.query('SELECT purchase_webhook_secret FROM tenants WHERE tenant_id=$1', [tenantId]);
+    const needsSecret = !!url && !cur.rows[0]?.purchase_webhook_secret;
+    const secretPlain = needsSecret ? generateWebhookSecret() : null;
+
+    const fields = {
+      purchase_webhook_url:    url === undefined ? undefined : (url || null),
+      purchase_webhook_secret: needsSecret ? encrypt(secretPlain) : undefined,
+    };
+    const cols = [];
+    const vals = [];
+    let i = 1;
+    for (const [col, val] of Object.entries(fields)) {
+      if (val === undefined) continue;
+      cols.push(`${col} = $${i++}`);
+      vals.push(val);
+    }
+    if (cols.length) {
+      vals.push(tenantId);
+      await db.query(`UPDATE tenants SET ${cols.join(', ')} WHERE tenant_id = $${i}`, vals);
+    }
+
+    logger.info('Onboarding webhook saved', { tenantId, hasUrl: !!url });
+    res.json({ ok: true, secret: secretPlain || undefined });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/onboarding/webhook/test ────────────────────────
+router.post('/webhook/test', async (req, res, next) => {
+  try {
+    const t = (await db.query(
+      'SELECT purchase_webhook_url, purchase_webhook_secret FROM tenants WHERE tenant_id=$1',
+      [req.tenantId]
+    )).rows[0];
+    if (!t || !t.purchase_webhook_url) {
+      return res.json({ success: false, message: 'No webhook URL configured' });
+    }
+    await sendPurchaseWebhook(t, {
+      event:     'webhook.test',
+      tenantId:  req.tenantId,
+      plan:      null,
+      amount:    0,
+      reference: `test_${req.tenantId}`,
+      timestamp: new Date().toISOString(),
+    });
+    res.json({ success: true, message: 'Test event sent' });
+  } catch (err) {
     res.json({ success: false, message: err.message });
   }
 });
@@ -213,11 +282,18 @@ router.post('/activate', async (req, res, next) => {
       [tenantId]
     );
 
+    // Fetch the slug for the store URL.
+    const tenantRes = await db.query('SELECT slug FROM tenants WHERE tenant_id = $1', [tenantId]);
+    const slug = tenantRes.rows[0]?.slug || tenantId;
+
     const base = (process.env.WEBHOOK_URL || '').replace(/\/$/, '');
     const paystackWebhookUrl = base ? `${base}/pay/${tenantId}` : `/pay/${tenantId}`;
 
-    logger.info('Tenant activated via web', { tenantId });
-    res.json({ ok: true, onboardingStep: 'done', paystackWebhookUrl });
+    const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:3001').replace(/\/$/, '');
+    const storeUrl = `${frontendBase}/store/${slug}`;
+
+    logger.info('Tenant activated via web', { tenantId, slug });
+    res.json({ ok: true, onboardingStep: 'done', paystackWebhookUrl, storeUrl });
   } catch (err) {
     next(err);
   }

@@ -163,6 +163,36 @@ async function migrate() {
       revoked_at  TIMESTAMP,
       created_at  TIMESTAMP DEFAULT NOW()
     );
+
+    -- ── Web: one-time codes for password reset + email-change verification ──
+    -- Covers both operators and customers (subject_type) and both purposes.
+    -- Hash-only, short-lived, attempt-capped, single-use (mirrors refresh_tokens).
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      id           SERIAL PRIMARY KEY,
+      subject_type VARCHAR(20)  NOT NULL,   -- 'operator' | 'customer'
+      subject_id   INTEGER,                 -- operators.id / customers.id (null until known for reset)
+      tenant_id    VARCHAR(50),             -- null for operators; set for customers
+      purpose      VARCHAR(20)  NOT NULL,   -- 'reset' | 'email_change'
+      email        VARCHAR(255) NOT NULL,   -- destination the code was sent to
+      new_email    VARCHAR(255),            -- email_change only: the address being adopted
+      code_hash    TEXT         NOT NULL,   -- SHA-256(code), never the code itself
+      attempts     INTEGER      DEFAULT 0,
+      expires_at   TIMESTAMP    NOT NULL,
+      consumed_at  TIMESTAMP,
+      created_at   TIMESTAMP    DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_otp_lookup ON otp_codes (subject_type, email, purpose);
+
+    -- ── Web: auto-renewal reminder log. One reminder per purchase, ever
+    --    (idempotency keyed on the purchase reference). ──
+    CREATE TABLE IF NOT EXISTS renewal_reminders (
+      id         SERIAL PRIMARY KEY,
+      tenant_id  VARCHAR(50)  NOT NULL,
+      reference  VARCHAR(100) NOT NULL,
+      email      VARCHAR(255),
+      sent_at    TIMESTAMP    DEFAULT NOW(),
+      UNIQUE (tenant_id, reference)
+    );
   `);
   // NOTE: indexes on voucher_stock are created near the end of this file,
   // AFTER the ALTER loop guarantees omada_profile_id exists on legacy tables.
@@ -187,6 +217,16 @@ async function migrate() {
     { name: 'mikrotik_password',   def: 'VARCHAR(200)' },
     { name: 'onboarding_step',     def: "VARCHAR(30) DEFAULT 'provider'" },
     { name: 'created_via',         def: "VARCHAR(20) DEFAULT 'telegram'" },
+    // ── Customer-facing store slug (unique, derived from business name) ──
+    { name: 'slug',                def: 'VARCHAR(100) UNIQUE' },
+    // ── Web: outbound post-purchase webhook (distinct from the Telegram bot
+    //    webhook_url above). URL plaintext; secret encrypted at rest. ──
+    { name: 'purchase_webhook_url',    def: 'TEXT' },
+    { name: 'purchase_webhook_secret', def: 'TEXT' },
+    // ── Latest provider-sync state, for the dashboard failed-sync toast ──
+    { name: 'last_sync_at',    def: 'TIMESTAMP' },
+    { name: 'last_sync_ok',    def: 'BOOLEAN' },
+    { name: 'last_sync_error', def: 'TEXT' },
 
   ];
 

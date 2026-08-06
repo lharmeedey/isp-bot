@@ -6,7 +6,8 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { customerApi, setTokens } from '@/lib/customerApi';
 import Alert from '@/components/Alert';
-import { Button, Field, Input, GradientHeader } from '@/components/ui';
+import StoreShell from '@/components/store/StoreShell';
+import { Button, Field, Input, PasswordInput } from '@/components/ui';
 
 export default function StoreRegister() {
   return (
@@ -61,46 +62,48 @@ function StoreRegisterInner() {
   }
 
   return (
-    <main className="min-h-screen">
-      <GradientHeader compact title="Create your account" subtitle="One account to buy plans and track your vouchers." />
-      <div className="mx-auto flex max-w-md flex-col px-4 py-10">
-        <motion.form
-          onSubmit={onSubmit}
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="card space-y-4"
-        >
-          <Alert type="error">{error}</Alert>
-          <Field label="Name (optional)" htmlFor="name">
-            <Input id="name" type="text" value={name}
-                   onChange={(e) => setName(e.target.value)} placeholder="Ada" />
-          </Field>
-          <Field label="Email" htmlFor="email">
-            <Input id="email" type="email" value={email}
-                   onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
-          </Field>
-          <Field label="Password" htmlFor="password" hint="At least 8 characters.">
-            <Input id="password" type="password" value={password}
-                   onChange={(e) => setPassword(e.target.value)} required
-                   autoComplete="new-password" minLength={8} />
-          </Field>
-          <Button type="submit" className="w-full" loading={busy}>
-            {busy ? 'Creating…' : 'Create account'}
-          </Button>
-        </motion.form>
-
-        <p className="mt-4 text-center text-sm text-slate-500">
-          Already have an account?{' '}
-          <Link href={`/store/${tenantId}/login${next ? `?next=${next}` : ''}`}
-                className="font-semibold text-brand-600 hover:underline">
-            Sign in
-          </Link>
-        </p>
-        <Link href={`/store/${tenantId}`} className="mt-2 text-center text-sm text-slate-400 hover:text-brand-600">
-          ← Back to store
-        </Link>
+    <StoreShell tenantId={tenantId} signedIn={false}
+                contentClassName="mx-auto flex max-w-md flex-col px-4 py-10">
+      <div className="mb-6 text-center">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Create your account</h1>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">One account to buy plans and track your vouchers.</p>
       </div>
-    </main>
+      <motion.form
+        onSubmit={onSubmit}
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="card space-y-4"
+      >
+        <Alert type="error">{error}</Alert>
+        <Field label="Name (optional)" htmlFor="name">
+          <Input id="name" type="text" value={name}
+                 onChange={(e) => setName(e.target.value)} placeholder="Ada" />
+        </Field>
+        <Field label="Email" htmlFor="email">
+          <Input id="email" type="email" value={email}
+                 onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+        </Field>
+        <Field label="Password" htmlFor="password" hint="At least 8 characters.">
+          <PasswordInput id="password" value={password}
+                 onChange={(e) => setPassword(e.target.value)} required
+                 autoComplete="new-password" minLength={8} />
+        </Field>
+        <Button type="submit" className="w-full" loading={busy}>
+          {busy ? 'Creating…' : 'Create account'}
+        </Button>
+      </motion.form>
+
+      <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
+        Already have an account?{' '}
+        <Link href={`/store/${tenantId}/login${next ? `?next=${next}` : ''}`}
+              className="font-semibold text-brand-600 hover:underline dark:text-brand-400">
+          Sign in
+        </Link>
+      </p>
+      <Link href={`/store/${tenantId}`} className="mt-2 text-center text-sm text-slate-400 hover:text-brand-600 dark:text-slate-500 dark:hover:text-brand-400">
+        ← Back to store
+      </Link>
+    </StoreShell>
   );
 }

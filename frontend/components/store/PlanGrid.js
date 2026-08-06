@@ -12,7 +12,7 @@ const naira = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
  */
 export default function PlanGrid({ plans, onBuy, busyLabel }) {
   if (!plans?.length) {
-    return <p className="text-center text-sm text-slate-500">No plans available right now — check back soon.</p>;
+    return <p className="text-center text-sm text-slate-500 dark:text-slate-400">No plans available right now — check back soon.</p>;
   }
 
   const popularIdx = plans.length >= 3 ? Math.floor(plans.length / 2) : -1;
@@ -38,13 +38,13 @@ export default function PlanGrid({ plans, onBuy, busyLabel }) {
                 Popular
               </span>
             )}
-            <h3 className="text-lg font-bold text-slate-900">{p.label}</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">{p.label}</h3>
             <div className="mt-2 flex items-baseline gap-1">
               <span className="text-3xl font-extrabold text-gradient">{naira(p.price)}</span>
             </div>
-            <ul className="mt-4 space-y-2 text-sm text-slate-600">
+            <ul className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
               <li className="flex items-center gap-2">
-                <Check /> <span><strong className="text-slate-900">{p.gb}</strong> GB data</span>
+                <Check /> <span><strong className="text-slate-900 dark:text-slate-100">{p.gb}</strong> GB data</span>
               </li>
               <li className="flex items-center gap-2">
                 <Check /> Valid for {p.validity} {String(p.validity) === '1' ? 'day' : 'days'}
@@ -71,7 +71,7 @@ export default function PlanGrid({ plans, onBuy, busyLabel }) {
 
 function Check() {
   return (
-    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-700">
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
       ✓
     </span>
   );

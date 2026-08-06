@@ -8,4 +8,5 @@ export { default as Skeleton } from './Skeleton';
 export { default as Toast } from './Toast';
 export { default as GradientHeader } from './GradientHeader';
 export { default as PageTransition, staggerContainer, staggerItem } from './PageTransition';
-export { Input, Field } from './Input';
+export { default as ThemeToggle } from './ThemeToggle';
+export { Input, Field, PasswordInput } from './Input';

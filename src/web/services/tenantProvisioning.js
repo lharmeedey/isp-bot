@@ -9,6 +9,7 @@
 const crypto = require('crypto');
 const db     = require('../../services/db');
 const { hashPassword } = require('../auth/password');
+const { generateUniqueSlug } = require('./slugify');
 
 // tenant_id: url-safe, unique-ish, human-readable-ish. e.g. "t_9f3a1c8b2d4e"
 function generateTenantId() {
@@ -57,10 +58,13 @@ async function registerOperator({ businessName, email, password }) {
     }
     if (!tenantId) throw new Error('Could not allocate a tenant id');
 
+    // Generate a unique slug from the business name.
+    const slug = await generateUniqueSlug(businessName || 'store', client);
+
     await client.query(
-      `INSERT INTO tenants (tenant_id, name, email, active, created_via, onboarding_step, network_provider)
-       VALUES ($1, $2, $3, false, 'web', 'provider', 'none')`,
-      [tenantId, businessName || null, normEmail]
+      `INSERT INTO tenants (tenant_id, name, email, active, created_via, onboarding_step, network_provider, slug)
+       VALUES ($1, $2, $3, false, 'web', 'provider', 'none', $4)`,
+      [tenantId, businessName || null, normEmail, slug]
     );
 
     const opRes = await client.query(

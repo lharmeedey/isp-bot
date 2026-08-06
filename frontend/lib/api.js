@@ -105,6 +105,14 @@ export const api = {
   logout:   () => apiFetch('/api/auth/logout', { method: 'POST', body: { refreshToken: getRefreshToken() } }),
   me:       () => apiFetch('/api/auth/me'),
 
+  // Password recovery (public) + profile self-service (authed)
+  forgotPassword: (email) => apiFetch('/api/auth/forgot', { method: 'POST', auth: false, body: { email } }),
+  resetPassword:  (payload) => apiFetch('/api/auth/reset', { method: 'POST', auth: false, body: payload }),
+  updateProfile:  (payload) => apiFetch('/api/auth/profile', { method: 'PUT', body: payload }),
+  changePassword: (payload) => apiFetch('/api/auth/password', { method: 'PUT', body: payload }),
+  requestEmailChange: (payload) => apiFetch('/api/auth/email/change', { method: 'POST', body: payload }),
+  verifyEmailChange:  (payload) => apiFetch('/api/auth/email/verify', { method: 'POST', body: payload }),
+
   // Onboarding
   saveProvider:  (payload) => apiFetch('/api/onboarding/provider', { method: 'PUT',  body: payload }),
   testProvider:  () => apiFetch('/api/onboarding/test',  { method: 'POST' }),
@@ -120,6 +128,8 @@ export const api = {
   stock:    () => apiFetch('/api/dashboard/stock'),
   online:   () => apiFetch('/api/dashboard/online'),
   syncNow:  () => apiFetch('/api/dashboard/sync', { method: 'POST' }),
+  syncStatus: () => apiFetch('/api/dashboard/sync-status'),
+  analytics:  (days = 30) => apiFetch(`/api/analytics/overview?days=${days}`),
   listPlans:() => apiFetch('/api/dashboard/plans'),
   createPlan:(payload) => apiFetch('/api/dashboard/plans', { method: 'POST', body: payload }),
   updatePlan:(planId, payload) => apiFetch(`/api/dashboard/plans/${planId}`, { method: 'PUT', body: payload }),

@@ -17,7 +17,7 @@ export default function Stepper({ current }) {
   return (
     <div className="mb-8">
       {/* progress rail */}
-      <div className="relative mb-4 h-1.5 rounded-full bg-slate-200">
+      <div className="relative mb-4 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800">
         <motion.div
           className="absolute inset-y-0 left-0 rounded-full bg-brand-gradient"
           initial={false}
@@ -38,13 +38,13 @@ export default function Stepper({ current }) {
                 className={
                   'flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold shadow-sm ' +
                   (done   ? 'bg-brand-gradient text-white'
-                   : active ? 'bg-white text-brand-700 ring-2 ring-brand-500'
-                   : 'bg-slate-200 text-slate-500')
+                   : active ? 'bg-white text-brand-700 ring-2 ring-brand-500 dark:bg-slate-900 dark:text-brand-300'
+                   : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400')
                 }
               >
                 {done ? '✓' : i + 1}
               </motion.span>
-              <span className={'text-xs ' + (active ? 'font-semibold text-slate-900' : 'text-slate-500')}>
+              <span className={'text-xs ' + (active ? 'font-semibold text-slate-900 dark:text-slate-100' : 'text-slate-500 dark:text-slate-400')}>
                 {s.label}
               </span>
             </li>

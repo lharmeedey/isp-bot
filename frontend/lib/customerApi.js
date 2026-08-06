@@ -95,9 +95,21 @@ export const customerApi = {
   login: (tenantId, payload) =>
     apiFetch(`/api/store/${tenantId}/auth/login`, { method: 'POST', auth: false, body: payload }),
 
+  // Password recovery (tenant from URL)
+  forgotPassword: (tenantId, email) =>
+    apiFetch(`/api/store/${tenantId}/auth/forgot`, { method: 'POST', auth: false, body: { email } }),
+  resetPassword: (tenantId, payload) =>
+    apiFetch(`/api/store/${tenantId}/auth/reset`, { method: 'POST', auth: false, body: payload }),
+
   // Authed (tenant from token)
   logout: () => apiFetch('/api/store/auth/logout', { method: 'POST', body: { refreshToken: getRefreshToken() } }),
   me:     () => apiFetch('/api/store/me'),
+
+  // Profile self-service (authed)
+  updateProfile:  (payload) => apiFetch('/api/store/profile', { method: 'PUT', body: payload }),
+  changePassword: (payload) => apiFetch('/api/store/password', { method: 'PUT', body: payload }),
+  requestEmailChange: (payload) => apiFetch('/api/store/email/change', { method: 'POST', body: payload }),
+  verifyEmailChange:  (payload) => apiFetch('/api/store/email/verify', { method: 'POST', body: payload }),
 
   // Checkout
   checkout: (plan)      => apiFetch('/api/checkout', { method: 'POST', body: { plan } }),

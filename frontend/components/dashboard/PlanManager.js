@@ -109,11 +109,11 @@ export default function PlanManager({ provider = 'none' }) {
 
   return (
     <section className="card">
-      <h2 className="mb-3 font-semibold text-slate-900">Plans</h2>
+      <h2 className="mb-3 font-semibold text-slate-900 dark:text-slate-100">Plans</h2>
       <Alert type="error">{error}</Alert>
 
       {isOmada && loadingGroups && (
-        <p className="mb-3 text-sm text-slate-500">Loading voucher groups…</p>
+        <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">Loading voucher groups…</p>
       )}
       {isOmada && !loadingGroups && !groups.length && (
         <div className="mb-3">
@@ -126,7 +126,7 @@ export default function PlanManager({ provider = 'none' }) {
       {plans.length ? (
         <table className="mb-4 w-full text-sm">
           <thead>
-            <tr className="text-left text-slate-500">
+            <tr className="text-left text-slate-500 dark:text-slate-400">
               <th className="py-2">Label</th><th>Price</th><th>GB</th><th>Validity</th>
               {isOmada && <th>Voucher group</th>}
               <th></th>
@@ -134,8 +134,8 @@ export default function PlanManager({ provider = 'none' }) {
           </thead>
           <tbody>
             {plans.map((p) => (
-              <tr key={p.planId} className="border-t border-slate-100">
-                <td className="py-2 font-medium text-slate-800">{p.label}</td>
+              <tr key={p.planId} className="border-t border-slate-100 dark:border-slate-800">
+                <td className="py-2 font-medium text-slate-800 dark:text-slate-200">{p.label}</td>
                 <td>₦{Number(p.price).toLocaleString('en-NG')}</td>
                 <td>{p.gb}</td>
                 <td>{p.validity}d</td>
@@ -167,7 +167,7 @@ export default function PlanManager({ provider = 'none' }) {
             ))}
           </tbody>
         </table>
-      ) : <p className="mb-4 text-sm text-slate-500">No plans yet.</p>}
+      ) : <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No plans yet.</p>}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-12 sm:items-end">
         <div className="sm:col-span-3">
@@ -208,7 +208,7 @@ export default function PlanManager({ provider = 'none' }) {
         </div>
       </div>
       {isOmada && (
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
           Each plan hands out vouchers from its mapped Omada group. Change a group above to remap instantly.
         </p>
       )}

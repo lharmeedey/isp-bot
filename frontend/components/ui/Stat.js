@@ -11,11 +11,11 @@ import { motion, useInView } from 'framer-motion';
 export default function Stat({ label, value, sub, variants }) {
   return (
     <motion.div variants={variants} className="card overflow-hidden">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mt-1 text-2xl font-bold text-slate-900">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-slate-900 dark:text-slate-100">
         <AnimatedValue value={value} />
       </p>
-      {sub ? <p className="mt-0.5 text-xs text-slate-500">{sub}</p> : null}
+      {sub ? <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{sub}</p> : null}
     </motion.div>
   );
 }

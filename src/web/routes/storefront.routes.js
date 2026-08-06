@@ -23,12 +23,14 @@ const db     = require('../../services/db');
 const logger = require('../../services/logger');
 const { signAccessToken, ACCESS_TTL_SECONDS } = require('../auth/jwt');
 const customerRefresh = require('../auth/customerRefresh');
-const { verifyPassword } = require('../auth/password');
+const { verifyPassword, hashPassword } = require('../auth/password');
 const {
   findTenant,
   registerCustomer,
   findCustomerByEmail,
 } = require('../services/customerProvisioning');
+const { createOtp, verifyOtp } = require('../services/otp');
+const { sendOtpEmail } = require('../services/mailer');
 const customerAuthRequired = require('../middleware/customerAuthRequired');
 const { authLimiter } = require('../middleware/rateLimit');
 
@@ -253,6 +255,191 @@ router.get('/me', customerAuthRequired, async (req, res, next) => {
         createdAt: v.created_at,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/store/:tenantId/auth/forgot ────────────────────
+// Start a customer password reset (tenant from URL). Always 200 — no enumeration.
+router.post('/:tenantId/auth/forgot', authLimiter, async (req, res, next) => {
+  try {
+    const tenantId = req.params.tenantId;
+    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+    const cust = email ? await findCustomerByEmail(tenantId, email) : null;
+
+    if (cust && cust.active) {
+      const code = await createOtp({
+        subjectType: 'customer',
+        subjectId:   cust.id,
+        tenantId,
+        email:       cust.email,
+        purpose:     'reset',
+      });
+      await sendOtpEmail(cust.email, code, 'reset');
+      logger.info('Customer password reset requested', { tenantId, customerId: cust.id });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/store/:tenantId/auth/reset ─────────────────────
+router.post('/:tenantId/auth/reset', authLimiter, async (req, res, next) => {
+  try {
+    const tenantId = req.params.tenantId;
+    const { email, code, newPassword } = req.body || {};
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: 'email, code and newPassword are required' });
+    }
+
+    await verifyOtp({ subjectType: 'customer', email, purpose: 'reset', code });
+
+    const cust = await findCustomerByEmail(tenantId, email);
+    if (!cust) return res.status(400).json({ error: 'Invalid or expired code' });
+
+    const passwordHash = await hashPassword(newPassword); // throws if <8 chars
+    await db.query('UPDATE customers SET password_hash = $1 WHERE id = $2', [passwordHash, cust.id]);
+    await customerRefresh.revokeAllForCustomer(cust.id); // kill every existing session
+
+    logger.info('Customer password reset completed', { tenantId, customerId: cust.id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PUT /api/store/profile ───────────────────────────────────
+// Update the customer's display name. Tenant + id come from the JWT.
+router.put('/profile', customerAuthRequired, async (req, res, next) => {
+  try {
+    const { customerId, tenantId } = req.customer;
+    const b = req.body || {};
+    if (b.name === undefined) return res.status(400).json({ error: 'Nothing to update' });
+
+    await db.query(
+      'UPDATE customers SET name = $1 WHERE id = $2 AND tenant_id = $3',
+      [String(b.name).trim() || null, customerId, tenantId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PUT /api/store/password ──────────────────────────────────
+// Change password while logged in (requires the current password).
+router.put('/password', customerAuthRequired, async (req, res, next) => {
+  try {
+    const { customerId, tenantId } = req.customer;
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    }
+
+    const custRes = await db.query(
+      'SELECT email, name, password_hash FROM customers WHERE id = $1 AND tenant_id = $2',
+      [customerId, tenantId]
+    );
+    const cust = custRes.rows[0];
+    if (!cust || !(await verifyPassword(currentPassword, cust.password_hash))) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const passwordHash = await hashPassword(newPassword); // throws if <8 chars
+    await db.query('UPDATE customers SET password_hash = $1 WHERE id = $2', [passwordHash, customerId]);
+    // Revoke all other sessions, then hand this one a fresh refresh token.
+    await customerRefresh.revokeAllForCustomer(customerId);
+    const refreshToken = await customerRefresh.issue(customerId);
+
+    res.json(issueTokens(res, {
+      customerId, tenantId, email: cust.email, name: cust.name,
+    }, refreshToken));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/store/email/change ─────────────────────────────
+// Request a login-email change: verify the current password, ensure the new
+// address is free WITHIN this tenant, and send an OTP to the NEW address.
+router.post('/email/change', customerAuthRequired, async (req, res, next) => {
+  try {
+    const { customerId, tenantId } = req.customer;
+    const { newEmail, currentPassword } = req.body || {};
+    const normEmail = String(newEmail || '').trim().toLowerCase();
+
+    if (!normEmail || !normEmail.includes('@')) {
+      return res.status(400).json({ error: 'A valid new email is required' });
+    }
+    if (!currentPassword) {
+      return res.status(400).json({ error: 'currentPassword is required' });
+    }
+
+    const custRes = await db.query(
+      'SELECT email, password_hash FROM customers WHERE id = $1 AND tenant_id = $2',
+      [customerId, tenantId]
+    );
+    const cust = custRes.rows[0];
+    if (!cust || !(await verifyPassword(currentPassword, cust.password_hash))) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    if (normEmail === cust.email) {
+      return res.status(400).json({ error: 'That is already your email' });
+    }
+
+    // Uniqueness is per-tenant for customers.
+    const dup = await db.query(
+      'SELECT 1 FROM customers WHERE tenant_id = $1 AND email = $2',
+      [tenantId, normEmail]
+    );
+    if (dup.rows.length) return res.status(409).json({ error: 'That email is already in use' });
+
+    const code = await createOtp({
+      subjectType: 'customer',
+      subjectId:   customerId,
+      tenantId,
+      email:       normEmail,      // the destination + lookup key for verify
+      purpose:     'email_change',
+      newEmail:    normEmail,
+    });
+    await sendOtpEmail(normEmail, code, 'email_change');
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/store/email/verify ─────────────────────────────
+router.post('/email/verify', customerAuthRequired, async (req, res, next) => {
+  try {
+    const { customerId, tenantId } = req.customer;
+    const { newEmail, code } = req.body || {};
+    const normEmail = String(newEmail || '').trim().toLowerCase();
+    if (!normEmail || !code) {
+      return res.status(400).json({ error: 'newEmail and code are required' });
+    }
+
+    const row = await verifyOtp({
+      subjectType: 'customer', email: normEmail, purpose: 'email_change', code,
+    });
+    if (row.subject_id !== customerId) {
+      return res.status(400).json({ error: 'Invalid code' });
+    }
+
+    // Re-check per-tenant uniqueness at apply time.
+    const dup = await db.query(
+      'SELECT 1 FROM customers WHERE tenant_id = $1 AND email = $2 AND id <> $3',
+      [tenantId, normEmail, customerId]
+    );
+    if (dup.rows.length) return res.status(409).json({ error: 'That email is already in use' });
+
+    await db.query('UPDATE customers SET email = $1 WHERE id = $2', [normEmail, customerId]);
+    logger.info('Customer email changed', { tenantId, customerId });
+    res.json({ ok: true, email: normEmail });
   } catch (err) {
     next(err);
   }

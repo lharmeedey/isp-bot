@@ -16,9 +16,9 @@ export default function Toast({ message, tone = 'info', onClose, duration = 3500
   }, [message, duration, onClose]);
 
   const tones = {
-    success: 'border-brand-200 bg-brand-50 text-brand-800',
-    error:   'border-red-200 bg-red-50 text-red-700',
-    info:    'border-slate-200 bg-white text-slate-700',
+    success: 'border-brand-200 bg-brand-50 text-brand-800 dark:border-brand-900/50 dark:bg-brand-950/60 dark:text-brand-300',
+    error:   'border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/60 dark:text-red-300',
+    info:    'border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200',
   };
 
   return (

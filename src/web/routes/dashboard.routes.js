@@ -95,6 +95,23 @@ router.get('/stock', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── GET /api/dashboard/sync-status ── latest provider-sync result ──
+router.get('/sync-status', async (req, res, next) => {
+  try {
+    const r = await db.query(
+      'SELECT last_sync_at, last_sync_ok, last_sync_error, network_provider FROM tenants WHERE tenant_id=$1',
+      [req.tenantId]
+    );
+    const t = r.rows[0] || {};
+    res.json({
+      provider:   t.network_provider || 'none',
+      lastSyncAt: t.last_sync_at || null,
+      ok:         t.last_sync_ok == null ? null : t.last_sync_ok,
+      error:      t.last_sync_ok === false ? (t.last_sync_error || null) : null,
+    });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/dashboard/online ── mirrors /online ─────────────
 router.get('/online', async (req, res, next) => {
   try {
@@ -134,8 +151,20 @@ router.post('/sync', async (req, res, next) => {
     if (tenant.network_provider !== 'omada') {
       return res.json({ totalInserted: 0, totalUpdated: 0, note: 'No sync for this provider' });
     }
-    const result = await getProvider(tenant).syncVouchersToDb(db);
-    res.json(result);
+    try {
+      const result = await getProvider(tenant).syncVouchersToDb(db);
+      await db.query(
+        'UPDATE tenants SET last_sync_at=NOW(), last_sync_ok=true, last_sync_error=NULL WHERE tenant_id=$1',
+        [req.tenantId]
+      ).catch(() => {});
+      res.json(result);
+    } catch (syncErr) {
+      await db.query(
+        'UPDATE tenants SET last_sync_at=NOW(), last_sync_ok=false, last_sync_error=$2 WHERE tenant_id=$1',
+        [req.tenantId, syncErr.message]
+      ).catch(() => {});
+      throw syncErr;
+    }
   } catch (err) { next(err); }
 });
 

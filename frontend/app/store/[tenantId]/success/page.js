@@ -5,8 +5,10 @@ import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { customerApi } from '@/lib/customerApi';
+import { useCustomer } from '@/lib/useCustomer';
 import Alert from '@/components/Alert';
-import { Button, Card, GradientHeader } from '@/components/ui';
+import StoreShell from '@/components/store/StoreShell';
+import { Button, Card } from '@/components/ui';
 
 // Paystack callback lands here (?reference=…). We verify server-side, which
 // provisions the voucher idempotently, then reveal the code.
@@ -22,6 +24,7 @@ function StoreSuccessInner() {
   const { tenantId } = useParams();
   const params = useSearchParams();
   const reference = params.get('reference');
+  const { me, logout } = useCustomer(tenantId, { redirect: false });
 
   const [state, setState] = useState('verifying'); // verifying | done | error
   const [result, setResult] = useState(null);
@@ -58,23 +61,32 @@ function StoreSuccessInner() {
   }
 
   return (
-    <main className="min-h-screen">
-      <GradientHeader compact
-        title={state === 'done' ? 'Payment confirmed 🎉' : state === 'error' ? 'Payment issue' : 'Confirming payment…'}
-        subtitle={state === 'done' ? 'Your voucher is ready to use.' : ''}
-      />
-      <div className="mx-auto max-w-md px-4 py-10">
-        {state === 'verifying' && (
+    <StoreShell
+      tenantId={tenantId}
+      signedIn={!!me}
+      customer={me?.customer}
+      onSignOut={logout}
+      contentClassName="mx-auto max-w-md px-4 py-10"
+    >
+      <div className="mb-6 text-center">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+          {state === 'done' ? 'Payment confirmed 🎉' : state === 'error' ? 'Payment issue' : 'Confirming payment…'}
+        </h1>
+        {state === 'done' && (
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Your voucher is ready to use.</p>
+        )}
+      </div>
+      {state === 'verifying' && (
           <Card className="flex flex-col items-center gap-4 py-10">
-            <span className="h-10 w-10 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" />
-            <p className="text-sm text-slate-500">Verifying your payment with Paystack…</p>
+            <span className="h-10 w-10 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600 dark:border-brand-900 dark:border-t-brand-400" />
+            <p className="text-sm text-slate-500 dark:text-slate-400">Verifying your payment with Paystack…</p>
           </Card>
         )}
 
         {state === 'error' && (
           <Card className="space-y-4">
             <Alert type="error">{error}</Alert>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
               If you were charged, your voucher is safe — reopen this page or check your account. Payments are
               only ever provisioned once.
             </p>
@@ -102,22 +114,22 @@ function StoreSuccessInner() {
               </motion.div>
 
               <div>
-                <p className="text-sm text-slate-500">Your voucher code</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Your voucher code</p>
                 <button onClick={copyCode}
-                        className="group mt-1 inline-flex items-center gap-2 rounded-xl border border-dashed border-brand-300 bg-brand-50 px-5 py-3 font-mono text-2xl font-bold tracking-wider text-brand-800 transition hover:bg-brand-100">
+                        className="group mt-1 inline-flex items-center gap-2 rounded-xl border border-dashed border-brand-300 bg-brand-50 px-5 py-3 font-mono text-2xl font-bold tracking-wider text-brand-800 transition hover:bg-brand-100 dark:border-brand-700 dark:bg-brand-950/50 dark:text-brand-200 dark:hover:bg-brand-900/50">
                   {result.code}
-                  <span className="text-xs font-sans font-normal text-brand-500 group-hover:text-brand-700">
+                  <span className="text-xs font-sans font-normal text-brand-500 group-hover:text-brand-700 dark:text-brand-400 dark:group-hover:text-brand-300">
                     {copied ? 'copied!' : 'tap to copy'}
                   </span>
                 </button>
               </div>
 
-              <div className="space-y-1 text-sm text-slate-600">
-                <p><span className="text-slate-400">Plan:</span> <strong className="text-slate-900">{result.plan}</strong></p>
-                {result.expiry && <p><span className="text-slate-400">Valid until:</span> {result.expiry}</p>}
+              <div className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                <p><span className="text-slate-400 dark:text-slate-500">Plan:</span> <strong className="text-slate-900 dark:text-slate-100">{result.plan}</strong></p>
+                {result.expiry && <p><span className="text-slate-400 dark:text-slate-500">Valid until:</span> {result.expiry}</p>}
               </div>
 
-              <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
                 Connect to the Wi-Fi network and enter this code on the login page. Keep it safe.
               </p>
 
@@ -128,7 +140,6 @@ function StoreSuccessInner() {
             </Card>
           </motion.div>
         )}
-      </div>
-    </main>
+    </StoreShell>
   );
 }

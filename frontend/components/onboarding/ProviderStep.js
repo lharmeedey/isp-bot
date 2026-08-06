@@ -72,8 +72,8 @@ export default function ProviderStep({ onAdvance }) {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">Connect your controller</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Connect your controller</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Enter your controller and payment details. We encrypt every secret before storing it.
         </p>
       </div>
@@ -115,7 +115,7 @@ export default function ProviderStep({ onAdvance }) {
           Next: plans →
         </button>
       </div>
-      {!saved && <p className="text-xs text-slate-400">Save before testing or moving on.</p>}
+      {!saved && <p className="text-xs text-slate-400 dark:text-slate-500">Save before testing or moving on.</p>}
     </div>
   );
 }
@@ -125,14 +125,14 @@ function Field({ label, children, hint }) {
     <div>
       <label className="label">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{hint}</p>}
     </div>
   );
 }
 
 function ProviderFields({ provider, form, set, setForm }) {
   if (provider === 'none') {
-    return <p className="text-sm text-slate-500">No controller — you can still take payments and manage plans manually.</p>;
+    return <p className="text-sm text-slate-500 dark:text-slate-400">No controller — you can still take payments and manage plans manually.</p>;
   }
   if (provider === 'mikrotik') {
     return (

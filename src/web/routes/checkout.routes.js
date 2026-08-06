@@ -29,6 +29,7 @@ const { decrypt } = require('../../services/encryption');
 const customerAuthRequired = require('../middleware/customerAuthRequired');
 const { makeLimiter } = require('../middleware/rateLimit');
 const { provisionForCustomer } = require('../services/webProvisioning');
+const { sendPurchaseWebhook } = require('../services/webhook');
 
 // Stricter cap on the money path: 20 attempts / 15 min per IP+email.
 const checkoutLimiter = makeLimiter({
@@ -165,6 +166,32 @@ router.get('/verify', customerAuthRequired, async (req, res, next) => {
       reference,
       amountKobo: tx.amount,
     });
+
+    // Outbound post-purchase webhook — fire once per real issue, never on a
+    // re-verify (page refresh). Fire-and-forget: must not block or break the
+    // customer's success response.
+    if (!result.alreadyIssued) {
+      db.query(
+        'SELECT purchase_webhook_url, purchase_webhook_secret FROM tenants WHERE tenant_id=$1',
+        [tenantId]
+      )
+        .then(r => {
+          const t = r.rows[0];
+          if (t && t.purchase_webhook_url) {
+            sendPurchaseWebhook(t, {
+              event:     'purchase.completed',
+              tenantId,
+              plan:      result.plan,
+              amount:    tx.amount / 100,          // naira, matches purchases.amount
+              reference,
+              code:      result.code,
+              timestamp: new Date().toISOString(),
+            }); // intentionally not awaited
+          }
+        })
+        .catch(() => {}); // never affects the customer's success path
+
+    }
 
     res.json({
       code:          result.code,

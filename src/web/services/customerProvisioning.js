@@ -16,10 +16,14 @@ const { hashPassword } = require('../auth/password');
  * Confirm a tenant exists and is open for business (active). Returns the row
  * { tenant_id, name, active } or null. Used by public store routes too.
  */
-async function findTenant(tenantId) {
+/**
+ * Find a tenant by slug or raw tenant_id. Returns the tenant row or null.
+ * Accepts both "acme-wifi" (slug) and "t_9f3a..." (raw id).
+ */
+async function findTenant(slugOrId) {
   const res = await db.query(
-    `SELECT tenant_id, name, active FROM tenants WHERE tenant_id = $1`,
-    [String(tenantId || '')]
+    `SELECT tenant_id, name, active FROM tenants WHERE slug = $1 OR tenant_id = $1 LIMIT 1`,
+    [String(slugOrId || '')]
   );
   return res.rows[0] || null;
 }

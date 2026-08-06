@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { api, setTokens } from '@/lib/api';
 import Alert from '@/components/Alert';
-import { Button, Field, Input } from '@/components/ui';
+import { Button, Field, Input, PasswordInput } from '@/components/ui';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -66,8 +66,8 @@ export default function RegisterPage() {
           transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
           className="w-full max-w-sm"
         >
-          <h1 className="mb-1 text-2xl font-bold text-slate-900">Create your account</h1>
-          <p className="mb-6 text-sm text-slate-500">Set up your operator console.</p>
+          <h1 className="mb-1 text-2xl font-bold text-slate-900 dark:text-slate-100">Create your account</h1>
+          <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">Set up your operator console.</p>
 
           <form onSubmit={onSubmit} className="card space-y-4">
             <Alert type="error">{error}</Alert>
@@ -80,7 +80,7 @@ export default function RegisterPage() {
                      onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
             </Field>
             <Field label="Password" htmlFor="password" hint="At least 8 characters.">
-              <Input id="password" type="password" value={password}
+              <PasswordInput id="password" value={password}
                      onChange={(e) => setPassword(e.target.value)} required
                      autoComplete="new-password" minLength={8} />
             </Field>
@@ -89,9 +89,9 @@ export default function RegisterPage() {
             </Button>
           </form>
 
-          <p className="mt-4 text-center text-sm text-slate-500">
+          <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
             Already have an account?{' '}
-            <Link href="/login" className="font-semibold text-brand-600 hover:underline">Sign in</Link>
+            <Link href="/login" className="font-semibold text-brand-600 hover:underline dark:text-brand-400">Sign in</Link>
           </p>
         </motion.div>
       </section>

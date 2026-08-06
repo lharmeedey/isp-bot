@@ -70,8 +70,8 @@ export default function PlansStep({ networkProvider, onAdvance }) {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">Define your plans</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Define your plans</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           {isOmada
             ? 'Map each plan to an Omada voucher group. Customers buy a plan; we hand out a voucher from its group.'
             : 'Create the plans customers can buy.'}
@@ -80,14 +80,14 @@ export default function PlansStep({ networkProvider, onAdvance }) {
 
       <Alert type="error">{error}</Alert>
 
-      {isOmada && loadingGroups && <p className="text-sm text-slate-500">Loading voucher groups…</p>}
+      {isOmada && loadingGroups && <p className="text-sm text-slate-500 dark:text-slate-400">Loading voucher groups…</p>}
       {isOmada && !loadingGroups && !groups.length && (
         <Alert type="info">No voucher groups found on the controller. Create some in Omada first, then reload.</Alert>
       )}
 
       <div className="space-y-3">
         {rows.map((row, i) => (
-          <div key={i} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-12 sm:items-end">
+          <div key={i} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-12 sm:items-end dark:border-slate-800">
             <div className="sm:col-span-3">
               <label className="label">Label</label>
               <input className="input" value={row.label} onChange={setCell(i, 'label')} placeholder="5 GB" />

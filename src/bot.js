@@ -193,13 +193,79 @@ cron.schedule('0 * * * *', async () => {
       const provider = getProvider(freshTenant);
       const result = await provider.syncVouchersToDb(db);
 
+      await db.query(
+        'UPDATE tenants SET last_sync_at=NOW(), last_sync_ok=true, last_sync_error=NULL WHERE tenant_id=$1',
+        [tenantId]
+      ).catch(() => {});
+
       logger.info('Hourly Omada sync complete', {
         tenantId,
         inserted: result.totalInserted,
         updated: result.totalUpdated,
       });
     } catch (err) {
+      await db.query(
+        'UPDATE tenants SET last_sync_at=NOW(), last_sync_ok=false, last_sync_error=$2 WHERE tenant_id=$1',
+        [tenantId, err.message]
+      ).catch(() => {});
       logger.error('Omada sync error', { tenantId, error: err.message });
+    }
+  }
+});
+
+// ── Auto-renewal reminder emails, daily 08:07 ────
+cron.schedule('7 8 * * *', async () => {
+  logger.debug('Running daily renewal reminder job');
+  const { computeExpiry } = require('./services/paymentLogic');
+  const { sendMail } = require('./web/services/mailer');
+  const bots = tenantManager.getActiveTenants();
+  const REMIND_DAYS = 3;  // remind when 0–3 days remain
+
+  for (const [tenantId, { tenant }] of bots) {
+    try {
+      // Latest success purchase per web customer, joined to plan for validity.
+      const rows = await db.query(
+        `SELECT DISTINCT ON (p.customer_id)
+                p.reference, p.email, p.plan, p.date, p.customer_id,
+                tp.validity
+           FROM purchases p
+           JOIN tenant_plans tp
+             ON tp.tenant_id = p.tenant_id
+            AND tp.label     = p.plan
+          WHERE p.tenant_id = $1
+            AND p.status    = 'success'
+            AND p.customer_id IS NOT NULL
+            AND p.email IS NOT NULL
+          ORDER BY p.customer_id, p.date DESC`,
+        [tenantId]
+      );
+
+      const now = new Date();
+      for (const row of rows.rows) {
+        const expiry = computeExpiry(row.validity, new Date(row.date));
+        const daysLeft = Math.ceil((expiry - now) / 86400000);
+        if (daysLeft < 0 || daysLeft > REMIND_DAYS) continue;
+
+        // Dedupe: one reminder per purchase reference, ever.
+        const ins = await db.query(
+          `INSERT INTO renewal_reminders (tenant_id, reference, email)
+           VALUES ($1,$2,$3) ON CONFLICT (tenant_id, reference) DO NOTHING RETURNING id`,
+          [tenantId, row.reference, row.email]
+        );
+        if (!ins.rows.length) continue;  // already reminded
+
+        await sendMail({
+          to: row.email,
+          subject: `Your ${row.plan} plan expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`,
+          text: `Hi,\n\nYour ${row.plan} plan expires on ${expiry.toISOString().slice(0,10)}. `
+              + `Re-purchase to stay connected.\n\n— ${tenant.name || 'Your ISP'}`,
+          html: `<p>Your <b>${row.plan}</b> plan expires on <b>${expiry.toISOString().slice(0,10)}</b>.</p>`
+              + `<p>Re-purchase to stay connected.</p>`,
+        });
+        logger.info('Renewal reminder sent', { tenantId, email: row.email, plan: row.plan, daysLeft });
+      }
+    } catch (err) {
+      logger.error('Renewal reminder job error', { tenantId, error: err.message });
     }
   }
 });

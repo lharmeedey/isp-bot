@@ -5,9 +5,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 // Inline alert used across forms. type: 'error' | 'success' | 'info'
 export default function Alert({ type = 'info', children }) {
   const styles = {
-    error:   'border-red-200 bg-red-50 text-red-700',
-    success: 'border-brand-200 bg-brand-50 text-brand-800',
-    info:    'border-slate-200 bg-slate-50 text-slate-600',
+    error:   'border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300',
+    success: 'border-brand-200 bg-brand-50 text-brand-800 dark:border-brand-900/50 dark:bg-brand-950/40 dark:text-brand-300',
+    info:    'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300',
   }[type];
 
   return (
