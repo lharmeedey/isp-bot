@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "env": {
+    "NEXT_PUBLIC_API_BASE": "https://isp-bots.onrender.com"
+  },
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_API_BASE": "https://isp-bots.onrender.com"
+    }
+  }
+}
