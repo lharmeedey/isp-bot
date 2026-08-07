@@ -40,14 +40,25 @@ async function sendMail({ to, subject, text, html }) {
   }
 
   try {
-    await getResend().emails.send({
+    // Resend v4's send() does NOT throw on API-level rejection (unverified
+    // domain, sandbox-only sender, etc.) — it resolves with { data, error }.
+    // We must inspect `error` or a rejected send looks like a success.
+    const { data, error } = await getResend().emails.send({
       from:    FROM,
       to,
       subject,
       text,
       html: html || undefined,
     });
-    logger.info('Email sent', { to, subject });
+    if (error) {
+      logger.error('Email send rejected by provider', {
+        to, subject, from: FROM,
+        error: error.message || String(error),
+        name:  error.name,
+      });
+      return false;
+    }
+    logger.info('Email sent', { to, subject, id: data && data.id });
     return true;
   } catch (err) {
     logger.error('Email send failed', { to, subject, error: err.message });
