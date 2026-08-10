@@ -9,7 +9,7 @@ import { useMemo } from 'react';
  * No chart library: the data is a gap-filled daily series from
  * /api/analytics/overview, so every day has a point and the x-axis is even.
  * The SVG uses a fixed viewBox and scales to its container, so it stays crisp
- * at any width. brand-500 (#14b8a6) is the series colour.
+ * at any width. Rich Gold (#D9A441, brand-500) is the series colour.
  *
  * Props: { data, loading }
  *   data = { days, daily:[{day,revenue,count}], byPlan:[{plan,count,revenue}], totals:{...} }
@@ -78,13 +78,13 @@ export default function RevenueChart({ data, loading = false }) {
           <path d={chart.areaPath} fill="url(#revFill)" />
           <defs>
             <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"  stopColor="#14b8a6" stopOpacity="0.28" />
-              <stop offset="100%" stopColor="#14b8a6" stopOpacity="0" />
+              <stop offset="0%"  stopColor="#D9A441" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#D9A441" stopOpacity="0" />
             </linearGradient>
           </defs>
 
           {/* the line */}
-          <path d={chart.linePath} fill="none" stroke="#14b8a6" strokeWidth="2"
+          <path d={chart.linePath} fill="none" stroke="#D9A441" strokeWidth="2"
                 strokeLinejoin="round" strokeLinecap="round" />
 
           {/* x labels (sparse: first, middle, last) */}

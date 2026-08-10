@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { customerApi } from '@/lib/customerApi';
 import ProfileMenu from '@/components/store/ProfileMenu';
-import { ThemeToggle } from '@/components/ui';
+import { Logo, ThemeToggle } from '@/components/ui';
 
 /**
  * StoreShell — the single persistent frame for every storefront page. A slim
@@ -51,7 +51,7 @@ export default function StoreShell({
       <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3.5">
           <Link href={`/store/${tenantId}`} className="flex min-w-0 items-center gap-2.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-gradient text-white shadow-glow">◍</span>
+            <Logo />
             <span className="truncate text-base font-bold text-slate-900 dark:text-slate-100">
               {name || 'Wi-Fi Store'}
             </span>

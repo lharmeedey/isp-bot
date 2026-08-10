@@ -108,7 +108,7 @@ function StoreSuccessInner() {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 260, damping: 14, delay: 0.1 }}
-                className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand-gradient text-3xl text-white shadow-glow"
+                className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand-gradient text-3xl text-slate-900 shadow-glow"
               >
                 ✓
               </motion.div>

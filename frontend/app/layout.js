@@ -5,8 +5,13 @@ import { ThemeProvider } from '@/lib/theme';
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 
 export const metadata = {
-  title: 'ISP Console & Store',
+  title: 'Quickxilver',
   description: 'Self-service onboarding, operator dashboard, and Wi-Fi storefront',
+};
+
+// Obsidian black to match the dark-default brand — colors the mobile browser chrome.
+export const viewport = {
+  themeColor: '#050505',
 };
 
 // Applied before paint so there's no light flash on first load. Defaults to dark.

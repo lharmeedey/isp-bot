@@ -37,7 +37,7 @@ export default function Stepper({ current }) {
                 transition={{ type: 'spring', stiffness: 300, damping: 18 }}
                 className={
                   'flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold shadow-sm ' +
-                  (done   ? 'bg-brand-gradient text-white'
+                  (done   ? 'bg-brand-gradient text-slate-900'
                    : active ? 'bg-white text-brand-700 ring-2 ring-brand-500 dark:bg-slate-900 dark:text-brand-300'
                    : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400')
                 }

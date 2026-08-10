@@ -8,7 +8,7 @@ import { api } from '@/lib/api';
 import Alert from '@/components/Alert';
 import PlanManager from '@/components/dashboard/PlanManager';
 import RevenueChart from '@/components/dashboard/RevenueChart';
-import { Button, Card, Stat, Badge, Skeleton, Toast, ThemeToggle, staggerContainer, staggerItem } from '@/components/ui';
+import { Button, Card, Stat, Badge, Skeleton, Toast, ThemeToggle, Logo, staggerContainer, staggerItem } from '@/components/ui';
 
 const naira = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
 const LOW_STOCK = 5; // toast when a plan drops below this many unused vouchers
@@ -107,7 +107,7 @@ export default function DashboardPage() {
       <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3.5">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-gradient text-white shadow-glow">◍</span>
+            <Logo />
             <div>
               <h1 className="text-base font-bold leading-tight text-slate-900 dark:text-slate-100">{me?.tenant?.name || 'Dashboard'}</h1>
               <p className="text-xs text-slate-500 dark:text-slate-400">{me?.operator?.email}</p>

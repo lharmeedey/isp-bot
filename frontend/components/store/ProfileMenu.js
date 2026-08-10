@@ -19,8 +19,8 @@ export default function ProfileMenu({ tenantId, name, email, onSignOut, tone = '
   const initials = (name || email || '?').trim().charAt(0).toUpperCase();
 
   const triggerClass = tone === 'surface'
-    ? 'flex h-10 w-10 items-center justify-center rounded-full bg-brand-600 text-sm font-bold text-white transition hover:bg-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60 dark:bg-brand-500 dark:hover:bg-brand-400'
-    : 'flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-sm font-bold text-white backdrop-blur transition hover:bg-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70';
+    ? 'flex h-10 w-10 items-center justify-center rounded-full bg-brand-600 text-sm font-bold text-slate-900 transition hover:bg-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60 dark:bg-brand-500 dark:hover:bg-brand-400'
+    : 'flex h-10 w-10 items-center justify-center rounded-full bg-black/10 text-sm font-bold text-slate-900 backdrop-blur transition hover:bg-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900/40';
 
   // Close on outside click or Escape.
   useEffect(() => {

@@ -9,9 +9,9 @@ import { motion } from 'framer-motion';
  */
 export default function GradientHeader({ title, subtitle, children, compact = false }) {
   return (
-    <div className="relative overflow-hidden bg-brand-gradient text-white">
+    <div className="relative overflow-hidden bg-brand-gradient text-slate-900">
       <div className="pointer-events-none absolute inset-0 bg-mesh opacity-60" />
-      <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+      <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-black/10 blur-2xl" />
       <div className={`relative mx-auto max-w-5xl px-4 ${compact ? 'py-8' : 'py-14'}`}>
         <motion.h1
           initial={{ opacity: 0, y: 16 }}
@@ -26,7 +26,7 @@ export default function GradientHeader({ title, subtitle, children, compact = fa
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.08 }}
-            className="mt-2 max-w-xl text-sm text-white/85 sm:text-base"
+            className="mt-2 max-w-xl text-sm text-slate-900/85 sm:text-base"
           >
             {subtitle}
           </motion.p>

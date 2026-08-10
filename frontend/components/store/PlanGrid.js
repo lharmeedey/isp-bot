@@ -40,7 +40,7 @@ export default function PlanGrid({ plans, onBuy, busyLabel }) {
             )}
             <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">{p.label}</h3>
             <div className="mt-2 flex items-baseline gap-1">
-              <span className="text-3xl font-extrabold text-gradient">{naira(p.price)}</span>
+              <span className="text-3xl font-extrabold text-brand-700 dark:text-brand-300">{naira(p.price)}</span>
             </div>
             <ul className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
               <li className="flex items-center gap-2">

@@ -25,10 +25,10 @@ export default function StoreAccountSettings() {
       <GradientHeader compact title="Account settings" subtitle="Manage your name, email and password.">
         <div className="flex flex-wrap items-center gap-2">
           <Link href={`/store/${tenantId}/account`}
-                className="rounded-xl bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/25">
+                className="rounded-xl bg-black/10 px-4 py-2 text-sm font-semibold text-slate-900 backdrop-blur transition hover:bg-black/20">
             ← Back to account
           </Link>
-          <ThemeToggle className="border-white/30 bg-white/15 text-white hover:border-white/50 hover:text-white dark:border-white/30 dark:bg-white/15 dark:text-white" />
+          <ThemeToggle className="border-slate-900/30 bg-black/10 text-slate-900 hover:border-slate-900/50 hover:text-slate-900 dark:border-slate-900/30 dark:bg-black/10 dark:text-slate-900" />
         </div>
       </GradientHeader>
 

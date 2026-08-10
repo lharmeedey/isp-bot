@@ -54,7 +54,7 @@ export default function HeroSlider({ plans = [], balanceGb = null, signedIn = fa
     <section
       aria-roledescription="carousel"
       aria-label="Store highlights"
-      className="relative overflow-hidden rounded-3xl bg-brand-gradient text-white shadow-float"
+      className="relative overflow-hidden rounded-3xl bg-brand-gradient text-slate-900 shadow-float"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onKeyDown={(e) => {
@@ -85,18 +85,18 @@ export default function HeroSlider({ plans = [], balanceGb = null, signedIn = fa
       {count > 1 && (
         <>
           <button type="button" onClick={prev} aria-label="Previous slide"
-                  className="absolute left-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur transition hover:bg-white/30">
+                  className="absolute left-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/10 text-slate-900 backdrop-blur transition hover:bg-black/20">
             ‹
           </button>
           <button type="button" onClick={next} aria-label="Next slide"
-                  className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur transition hover:bg-white/30">
+                  className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/10 text-slate-900 backdrop-blur transition hover:bg-black/20">
             ›
           </button>
           <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-2">
             {slides.map((_, i) => (
               <button key={i} type="button" onClick={() => go(i)}
                       aria-label={`Go to slide ${i + 1}`} aria-current={i === safeIndex}
-                      className={`h-2 rounded-full transition-all ${i === safeIndex ? 'w-6 bg-white' : 'w-2 bg-white/50 hover:bg-white/70'}`} />
+                      className={`h-2 rounded-full transition-all ${i === safeIndex ? 'w-6 bg-slate-900' : 'w-2 bg-slate-900/40 hover:bg-slate-900/60'}`} />
             ))}
           </div>
         </>
@@ -115,11 +115,11 @@ function buildSlides({ plans, balanceGb, signedIn, onBuy }) {
     key: 'promo',
     render: () => (
       <div className="mx-auto max-w-xl text-center">
-        <p className="text-sm font-semibold uppercase tracking-wide text-white/80">Instant data</p>
+        <p className="text-sm font-semibold uppercase tracking-wide text-slate-900/80">Instant data</p>
         <h1 className="mt-2 text-3xl font-extrabold leading-tight sm:text-4xl">
           Buy a plan, get your voucher in seconds.
         </h1>
-        <p className="mt-3 text-white/85">Secure payment, instant delivery. Pick a plan below to get started.</p>
+        <p className="mt-3 text-slate-900/85">Secure payment, instant delivery. Pick a plan below to get started.</p>
       </div>
     ),
   });
@@ -132,15 +132,15 @@ function buildSlides({ plans, balanceGb, signedIn, onBuy }) {
         <div className="mx-auto max-w-xl text-center">
           {balanceGb > 0 ? (
             <>
-              <p className="text-sm font-semibold uppercase tracking-wide text-white/80">Your data balance</p>
+              <p className="text-sm font-semibold uppercase tracking-wide text-slate-900/80">Your data balance</p>
               <p className="mt-2 text-5xl font-extrabold sm:text-6xl">{balanceGb} <span className="text-2xl font-bold">GB</span></p>
-              <p className="mt-3 text-white/85">Across your active vouchers. Top up any time.</p>
+              <p className="mt-3 text-slate-900/85">Across your active vouchers. Top up any time.</p>
             </>
           ) : (
             <>
-              <p className="text-sm font-semibold uppercase tracking-wide text-white/80">Your data balance</p>
+              <p className="text-sm font-semibold uppercase tracking-wide text-slate-900/80">Your data balance</p>
               <p className="mt-2 text-3xl font-extrabold sm:text-4xl">You&apos;re out of data</p>
-              <p className="mt-3 text-white/85">Grab a plan below to get back online.</p>
+              <p className="mt-3 text-slate-900/85">Grab a plan below to get back online.</p>
             </>
           )}
         </div>
@@ -155,12 +155,12 @@ function buildSlides({ plans, balanceGb, signedIn, onBuy }) {
       key: `plan-${plan.label}`,
       render: () => (
         <div className="mx-auto max-w-xl text-center">
-          <p className="text-sm font-semibold uppercase tracking-wide text-white/80">Featured plan</p>
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-900/80">Featured plan</p>
           <h2 className="mt-2 text-3xl font-extrabold sm:text-4xl">{plan.label}</h2>
-          <p className="mt-1 text-lg text-white/90">{naira(plan.price)} · {plan.validity}</p>
+          <p className="mt-1 text-lg text-slate-900/90">{naira(plan.price)} · {plan.validity}</p>
           {onBuy && (
             <button type="button" onClick={() => onBuy(plan)}
-                    className="mt-5 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-brand-700 shadow-sm transition hover:-translate-y-0.5">
+                    className="mt-5 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:-translate-y-0.5">
               Get this plan →
             </button>
           )}

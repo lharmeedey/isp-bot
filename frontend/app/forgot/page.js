@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { api } from '@/lib/api';
 import Alert from '@/components/Alert';
-import { Button, Field, Input, PasswordInput } from '@/components/ui';
+import { Button, Field, Input, PasswordInput, Logo } from '@/components/ui';
 
 // Two-step reset: (1) enter email → we email a 6-digit code, (2) enter the code
 // + a new password. Step 1 always "succeeds" (the backend never reveals whether
@@ -59,16 +59,16 @@ export default function ForgotPage() {
       {/* Brand panel */}
       <aside className="relative hidden overflow-hidden bg-brand-gradient lg:block">
         <div className="absolute inset-0 bg-mesh opacity-70" />
-        <div className="absolute -left-10 top-1/3 h-72 w-72 rounded-full bg-white/10 blur-3xl animate-float" />
-        <div className="relative flex h-full flex-col justify-between p-12 text-white">
-          <span className="text-lg font-bold tracking-tight">◍ ISP Console</span>
+        <div className="absolute -left-10 top-1/3 h-72 w-72 rounded-full bg-black/10 blur-3xl animate-float" />
+        <div className="relative flex h-full flex-col justify-between p-12 text-slate-900">
+          <Logo variant="lockup" size={56} />
           <div>
             <h2 className="text-3xl font-bold leading-tight">Reset your password.</h2>
-            <p className="mt-3 max-w-sm text-white/80">
+            <p className="mt-3 max-w-sm text-slate-900/80">
               We&apos;ll email you a one-time code to set a new password securely.
             </p>
           </div>
-          <p className="text-xs text-white/60">Codes expire in 10 minutes.</p>
+          <p className="text-xs text-slate-900/70">Codes expire in 10 minutes.</p>
         </div>
       </aside>
 

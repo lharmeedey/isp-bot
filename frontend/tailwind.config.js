@@ -8,40 +8,64 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Vibrant telecom palette. `brand` is teal so every existing brand-*
-        // class reskins automatically; `accent` is a warm amber highlight.
+        // Quickxilver brand system — black-dominant, gold-forward, deep-teal as a
+        // whisper accent (70% black / 15% gold / 10% ivory / 5% teal). `brand` is the
+        // GOLD ramp so every existing brand-* class reskins to gold automatically;
+        // `accent` is deep teal (the 5% secondary); `slate` is overridden to a warm
+        // obsidian↔ivory neutral so surfaces/borders/text warm in one shot.
         brand: {
-          50:  '#f0fdfa',
-          100: '#ccfbf1',
-          200: '#99f6e4',
-          300: '#5eead4',
-          400: '#2dd4bf',
-          500: '#14b8a6',
-          600: '#0d9488',
-          700: '#0f766e',
-          800: '#115e59',
-          900: '#134e4a',
+          50:  '#FBF6E9',
+          100: '#F6E7C2',
+          200: '#EED79B',
+          300: '#E6C46E',
+          400: '#DDAE49',
+          500: '#D9A441', // Rich Gold — strong accent
+          600: '#B4831F',
+          700: '#9A681F', // Bronze Gold — secondary gold
+          800: '#6E4C18',
+          900: '#5A4018', // Dark Gold — gradient shadow
+          champagne: '#F1C77D', // primary gold / highlights
+          bright:    '#FFD45A', // high-energy highlights
         },
         accent: {
-          50:  '#fffbeb',
-          100: '#fef3c7',
-          400: '#fbbf24',
-          500: '#f59e0b',
-          600: '#d97706',
+          50:  '#E7F2EE',
+          100: '#C4E0D8',
+          400: '#2FA98C',
+          500: '#0E7C63',
+          600: '#0A5E4B',
+          900: '#033128', // Deep Teal
+        },
+        // Warm neutral ramp (overrides Tailwind's cool default slate). Luminance
+        // order preserved rung-for-rung so every slate-*/dark:slate-* usage keeps its
+        // contrast relationships while shifting from cool grey to warm obsidian/ivory.
+        slate: {
+          50:  '#F7F5EA', // Ivory White — main text (on dark) / page bg (on light)
+          100: '#E8E8E4', // Soft White — secondary text
+          200: '#DCDAD0',
+          300: '#C4C2B8',
+          400: '#A6A49A',
+          500: '#8D908B', // Muted Gray — supporting text
+          600: '#5F615C',
+          700: '#3A3C39',
+          800: '#1B1C1A',
+          900: '#111111', // Carbon Black — cards / panels
+          950: '#050505', // Obsidian Black — main background
         },
       },
       fontFamily: {
         sans: ['var(--font-sans)', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
-        glow:  '0 10px 40px -12px rgba(13, 148, 136, 0.45)',
-        card:  '0 1px 3px rgba(15, 23, 42, 0.06), 0 8px 24px -12px rgba(15, 23, 42, 0.12)',
-        float: '0 20px 50px -20px rgba(13, 148, 136, 0.35)',
+        glow:  '0 10px 40px -12px rgba(217, 164, 65, 0.40)',
+        card:  '0 1px 3px rgba(5, 5, 5, 0.06), 0 8px 24px -12px rgba(5, 5, 5, 0.14)',
+        float: '0 20px 50px -20px rgba(154, 104, 31, 0.35)',
       },
       backgroundImage: {
-        'brand-gradient':  'linear-gradient(135deg, #0d9488 0%, #10b981 100%)',
-        'brand-radial':    'radial-gradient(1200px circle at 0% 0%, rgba(13,148,136,0.12), transparent 40%), radial-gradient(1000px circle at 100% 0%, rgba(16,185,129,0.10), transparent 45%)',
-        'mesh':            'radial-gradient(at 20% 20%, rgba(20,184,166,0.18) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(16,185,129,0.14) 0px, transparent 50%), radial-gradient(at 100% 80%, rgba(245,158,11,0.10) 0px, transparent 50%)',
+        // Champagne → Rich → Bronze gold. The signature Quickxilver gradient, used on
+        // every large brand surface (auth asides, hero, buttons). Carries near-black text.
+        'brand-gradient':  'linear-gradient(135deg, #F1C77D 0%, #D9A441 55%, #9A681F 100%)',
+        'brand-radial':    'radial-gradient(1200px circle at 0% 0%, rgba(217,164,65,0.12), transparent 40%), radial-gradient(1000px circle at 100% 0%, rgba(154,104,31,0.10), transparent 45%)',
+        'mesh':            'radial-gradient(at 20% 20%, rgba(241,199,125,0.16) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(217,164,65,0.12) 0px, transparent 50%), radial-gradient(at 100% 80%, rgba(3,49,40,0.10) 0px, transparent 50%)',
       },
       keyframes: {
         'fade-up':  { '0%': { opacity: '0', transform: 'translateY(12px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },

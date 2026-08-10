@@ -17,7 +17,7 @@ export default function Card({
   return (
     <motion.div
       variants={variants}
-      whileHover={hover ? { y: -4, boxShadow: '0 20px 50px -20px rgba(13,148,136,0.35)' } : undefined}
+      whileHover={hover ? { y: -4, boxShadow: '0 20px 50px -20px rgba(154,104,31,0.35)' } : undefined}
       transition={{ type: 'spring', stiffness: 300, damping: 24 }}
       className={`card ${className}`}
       {...props}
